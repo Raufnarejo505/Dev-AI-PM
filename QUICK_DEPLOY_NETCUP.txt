@@ -1,0 +1,30 @@
+# Quick Deploy Commands for Netcup Server
+# Copy and paste these commands in WinSCP Console
+
+# Step 1: Setup environment file (automated)
+chmod +x setup-env.sh
+./setup-env.sh
+
+# Step 2: Make deployment script executable
+chmod +x deploy-netcup.sh
+
+# Step 3: Deploy
+./deploy-netcup.sh
+
+# OR manual deployment:
+# docker compose -f docker-compose.prod.yml build
+# docker compose -f docker-compose.prod.yml up -d
+
+# Step 4: Wait and check (after 30-60 seconds)
+sleep 30
+docker compose -f docker-compose.prod.yml ps
+
+# Step 5: Check health
+curl http://localhost/health
+
+# Step 6: Seed demo data
+docker compose -f docker-compose.prod.yml exec backend python -m app.tasks.seed_demo_data
+
+# Step 7: View logs
+docker compose -f docker-compose.prod.yml logs -f
+

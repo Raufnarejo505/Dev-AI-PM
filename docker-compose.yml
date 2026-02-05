@@ -1,0 +1,150 @@
+services:
+  postgres:
+    image: timescale/timescaledb:latest-pg15
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-pm_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pm_pass}
+      POSTGRES_DB: ${POSTGRES_DB:-pm_db}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks:
+      - pm-net
+
+  mqtt:
+    image: eclipse-mosquitto:2
+    restart: unless-stopped
+    volumes:
+      - ./mqtt:/mosquitto/config:Z
+    ports:
+      - "1883:1883"
+    networks:
+      - pm-net
+
+  ai-service:
+    build:
+      context: ./ai_service
+    restart: unless-stopped
+    ports:
+      - "8001:8000"
+    networks:
+      - pm-net
+
+  backend:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_started
+      ai-service:
+        condition: service_started
+      mqtt:
+        condition: service_started
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-pm_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pm_pass}
+      POSTGRES_DB: ${POSTGRES_DB:-pm_db}
+      MSSQL_HOST: ${MSSQL_HOST:-}
+      MSSQL_PORT: ${MSSQL_PORT:-1433}
+      MSSQL_USER: ${MSSQL_USER:-}
+      MSSQL_PASSWORD: ${MSSQL_PASSWORD:-}
+      MSSQL_DATABASE: ${MSSQL_DATABASE:-HISTORISCH}
+      MSSQL_TABLE: ${MSSQL_TABLE:-Tab_Actual}
+      AI_SERVICE_URL: http://ai-service:8000
+      MQTT_BROKER_HOST: mqtt
+      MQTT_BROKER_PORT: 1883
+      MQTT_TOPICS: "factory/+/telemetry,edge/#,sensors/+/telemetry"
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+      JWT_EXP_MINUTES: ${JWT_EXP_MINUTES:-60}
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    command: >
+      sh -c "python scripts/wait_for_db.py &&
+             python scripts/fix_alembic_version.py 2>/dev/null || true &&
+             alembic upgrade head 2>&1 | grep -v 'already exists' || true &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    networks:
+      - pm-net
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        - VITE_API_URL=/api
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      - VITE_API_URL=/api
+    ports:
+      - "3000:80"
+    networks:
+      - pm-net
+
+  # DISABLED: MQTT Simulator - removed to focus on OPC UA only
+  # simulator:
+  #   build:
+  #     context: ./simulator
+  #   depends_on:
+  #     - mqtt
+  #   environment:
+  #     MQTT_BROKER_HOST: mqtt
+  #     MQTT_BROKER_PORT: 1883
+  #   networks:
+  #     - pm-net
+
+  # OPC UA → MQTT Gateway Service
+  edge-gateway:
+    build:
+      context: ./edge_gateway
+    restart: unless-stopped
+    depends_on:
+      - mqtt
+    environment:
+      OPCUA_ENDPOINT: opc.tcp://host.docker.internal:53530/OPCUA/SimulationServer
+      MQTT_BROKER: mqtt
+      MQTT_PORT: 1883
+      MACHINE_ID: ${MACHINE_ID:-extruder-01}
+      SAMPLING_INTERVAL_MS: ${SAMPLING_INTERVAL_MS:-1000}
+      OPCUA_NAMESPACE_INDEX: ${OPCUA_NAMESPACE_INDEX:-3}
+    networks:
+      - pm-net
+    # Note: host.docker.internal allows access to OPC UA server on host machine
+    # For Linux, add this line:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # Edge / AI Application
+  edge-ai:
+    build:
+      context: ./edge_ai
+    restart: unless-stopped
+    depends_on:
+      - mqtt
+      - edge-gateway
+    environment:
+      MQTT_BROKER: mqtt
+      MQTT_PORT: 1883
+      MQTT_TOPIC_PATTERN: factory/+/telemetry
+    networks:
+      - pm-net
+
+networks:
+  pm-net:
+    driver: bridge
+
+volumes:
+  postgres-data:
+

@@ -1,0 +1,74 @@
+# Render Blueprint for Docker Deployment
+# Deploy this application to Render using Docker
+
+services:
+  # PostgreSQL Database
+  - type: pg
+    name: pm-database
+    plan: starter
+    databaseName: pm_db
+    user: pm_user
+
+  # Backend API
+  - type: web
+    name: pm-backend
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    envVars:
+      - key: POSTGRES_HOST
+        fromDatabase:
+          name: pm-database
+          property: host
+      - key: POSTGRES_PORT
+        fromDatabase:
+          name: pm-database
+          property: port
+      - key: POSTGRES_USER
+        fromDatabase:
+          name: pm-database
+          property: user
+      - key: POSTGRES_PASSWORD
+        fromDatabase:
+          name: pm-database
+          property: password
+      - key: POSTGRES_DB
+        fromDatabase:
+          name: pm-database
+          property: database
+      - key: AI_SERVICE_URL
+        value: https://pm-ai-service.onrender.com
+      - key: MQTT_BROKER_HOST
+        value: mqtt
+      - key: MQTT_BROKER_PORT
+        value: 1883
+      - key: MQTT_TOPICS
+        value: "factory/#,edge/#"
+      - key: JWT_SECRET
+        generateValue: true
+    healthCheckPath: /health
+    plan: starter
+
+  # AI Service
+  - type: web
+    name: pm-ai-service
+    runtime: docker
+    dockerfilePath: ./ai_service/Dockerfile
+    dockerContext: ./ai_service
+    plan: starter
+    healthCheckPath: /health
+
+  # Frontend
+  - type: web
+    name: pm-frontend
+    runtime: docker
+    dockerfilePath: ./frontend/Dockerfile
+    dockerContext: ./frontend
+    envVars:
+      - key: VITE_API_URL
+        fromService:
+          name: pm-backend
+          type: web
+          property: host
+    plan: starter
+

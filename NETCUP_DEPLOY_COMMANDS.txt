@@ -1,0 +1,65 @@
+# Netcup Deployment Commands
+# Copy and paste these commands one by one in WinSCP Console or SSH
+
+# Step 1: Navigate to project directory
+cd "/root/Predictive Maintenance"
+
+# Step 2: Check if Docker is installed
+docker --version
+docker compose version
+
+# If Docker is not installed, run:
+# curl -fsSL https://get.docker.com -o get-docker.sh
+# sh get-docker.sh
+# apt install docker-compose-plugin -y
+
+# Step 3: Create environment file
+cp backend/env.example backend/.env
+
+# Step 4: Generate JWT secret and update .env
+# Generate secret:
+openssl rand -hex 32
+
+# Copy the output, then edit .env file:
+nano backend/.env
+
+# In nano editor:
+# - Find JWT_SECRET= and replace with: JWT_SECRET=<paste-generated-secret>
+# - Find POSTGRES_PASSWORD= and set a strong password
+# - Save: Ctrl+X, then Y, then Enter
+
+# Step 5: Make deployment script executable
+chmod +x deploy-netcup.sh
+
+# Step 6: Run deployment
+./deploy-netcup.sh
+
+# OR manually build and start:
+docker compose -f docker-compose.prod.yml build
+docker compose -f docker-compose.prod.yml up -d
+
+# Step 7: Wait 30 seconds, then check status
+sleep 30
+docker compose -f docker-compose.prod.yml ps
+
+# Step 8: Check logs
+docker compose -f docker-compose.prod.yml logs backend --tail=50
+
+# Step 9: Check if services are running
+curl http://localhost/health
+
+# Step 10: Seed demo data (optional)
+docker compose -f docker-compose.prod.yml exec backend python -m app.tasks.seed_demo_data
+
+# Step 11: Check frontend
+curl http://localhost
+
+# View all logs
+docker compose -f docker-compose.prod.yml logs -f
+
+# Stop services
+docker compose -f docker-compose.prod.yml stop
+
+# Restart services
+docker compose -f docker-compose.prod.yml restart
+

@@ -1,0 +1,30 @@
+# Fix Port 80 Conflict - Commands to Run
+
+# Step 1: Check what's using port 80
+netstat -tulpn | grep :80
+# OR
+ss -tulpn | grep :80
+# OR
+lsof -i :80
+
+# Step 2: Stop the conflicting service (usually Apache or nginx)
+# If Apache:
+systemctl stop apache2
+systemctl disable apache2  # Prevent it from starting on boot
+
+# If nginx (system nginx, not Docker):
+systemctl stop nginx
+systemctl disable nginx
+
+# Step 3: Restart the frontend container
+docker compose -f docker-compose.prod.yml restart frontend
+
+# OR if that doesn't work, recreate it:
+docker compose -f docker-compose.prod.yml up -d frontend
+
+# Step 4: Verify it's running
+docker compose -f docker-compose.prod.yml ps
+
+# Step 5: Test the application
+curl http://localhost/health
+

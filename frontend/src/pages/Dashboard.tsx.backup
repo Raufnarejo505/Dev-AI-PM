@@ -1,0 +1,793 @@
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { useBackendStore } from '../store/backendStore';
+import { safeApi } from '../api/safeApi';
+import { CardSkeleton, ChartSkeleton } from '../components/FallbackSkeleton';
+import { BackendOnlineBanner } from '../components/BackendOnlineBanner';
+import { useT } from '../i18n/I18nProvider';
+
+const gradientClass = "min-h-screen bg-[#f7f5ff] text-slate-900";
+const REFRESH_INTERVAL = 3000; // 3 seconds refresh interval
+const MIN_FETCH_INTERVAL = 2000; // Minimum time between fetches (throttling)
+
+ export default function Dashboard() {
+  const t = useT();
+  const [overview, setOverview] = useState<any>(null);
+  const [predictions, setPredictions] = useState<any[]>([]);
+  const [aiStatus, setAiStatus] = useState<any>(null);
+  const [mssqlStatus, setMssqlStatus] = useState<any>(null);
+  const [mssqlRows, setMssqlRows] = useState<any[]>([]);
+  const [mssqlDerived, setMssqlDerived] = useState<any>(null);
+  const [machinesStats, setMachinesStats] = useState<any>(null);
+  const [isDisconnecting, setIsDisconnecting] = useState(false);
+  const [sensorsStats, setSensorsStats] = useState<any>(null);
+  const [predictionsStats, setPredictionsStats] = useState<any>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isFallback, setIsFallback] = useState(false);
+  const [selectedMachine] = useState<string>('01: Weber 44');
+  const [selectedMaterial] = useState<string>('Material 1');
+  const [autoRefresh, setAutoRefresh] = useState(true);
+  const [isResetting, setIsResetting] = useState(false);
+  const [resetMessage, setResetMessage] = useState<string | null>(null);
+  
+  const backendStatus = useBackendStore((state) => state.status);
+  const mountedRef = useRef(true);
+  const lastFetchRef = useRef<number>(0);
+  const intervalRef = useRef<NodeJS.Timeout | null>(null);
+  
+  useEffect(() => {
+    mountedRef.current = true;
+    
+    const fetchDashboardData = async (isInitial = false) => {
+      // Throttle: Don't fetch if last fetch was too recent
+      const now = Date.now();
+      if (!isInitial && (now - lastFetchRef.current < MIN_FETCH_INTERVAL)) {
+        return;
+      }
+      lastFetchRef.current = now;
+      
+      if (!isInitial) {
+        setIsLoading(false); // Don't show loading on refresh
+      }
+      
+      try {
+        // Fetch all data in parallel - matching backend endpoints
+        const [overviewResult, predictionsResult, aiResult, machinesStatsResult, sensorsStatsResult, predictionsStatsResult, mssqlStatusResult, mssqlLatestResult, mssqlDerivedResult] = await Promise.all([
+          safeApi.get('/dashboard/overview'),
+          safeApi.get('/predictions?limit=30&sort=desc'),
+          safeApi.get('/ai/status'),
+          safeApi.get('/dashboard/machines/stats'),
+          safeApi.get('/dashboard/sensors/stats'),
+          safeApi.get('/dashboard/predictions/stats'),
+          safeApi.get('/dashboard/extruder/status'),
+          safeApi.get('/dashboard/extruder/latest?limit=50'),
+          safeApi.get('/dashboard/extruder/derived?window_minutes=30'),
+        ]);
+        
+        if (!mountedRef.current) return;
+        
+        const hasFallback = overviewResult.fallback || predictionsResult.fallback || 
+                           aiResult.fallback ||
+                           machinesStatsResult.fallback || sensorsStatsResult.fallback || predictionsStatsResult.fallback ||
+                           mssqlStatusResult.fallback || mssqlLatestResult.fallback || mssqlDerivedResult.fallback;
+        setIsFallback(hasFallback);
+        
+        // If AI is offline, disable live updates
+        if (aiResult.fallback || (aiResult.data && aiResult.data.status !== 'healthy')) {
+          setAutoRefresh(false);
+        }
+        
+        // Batch state updates to prevent multiple re-renders
+        if (overviewResult.data) setOverview(overviewResult.data);
+        if (predictionsResult.data) setPredictions(Array.isArray(predictionsResult.data) ? predictionsResult.data : []);
+        if (aiResult.data) setAiStatus(aiResult.data);
+        if (mssqlStatusResult.data) setMssqlStatus(mssqlStatusResult.data);
+        if ((mssqlLatestResult.data as any)?.rows) setMssqlRows(((mssqlLatestResult.data as any).rows as any[]) || []);
+        if (mssqlDerivedResult.data) setMssqlDerived(mssqlDerivedResult.data);
+        if (machinesStatsResult.data) setMachinesStats(machinesStatsResult.data);
+        if (sensorsStatsResult.data) setSensorsStats(sensorsStatsResult.data);
+        if (predictionsStatsResult.data) setPredictionsStats(predictionsStatsResult.data);
+        
+      } catch (error) {
+        console.error('Dashboard fetch error:', error);
+        if (mountedRef.current) {
+          setIsFallback(true);
+        }
+      } finally {
+        if (mountedRef.current) {
+          setIsLoading(false);
+        }
+      }
+    };
+    
+    // Initial fetch
+    fetchDashboardData(true);
+    
+    // Real-time updates: Refresh every REFRESH_INTERVAL when online
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+    }
+    
+    intervalRef.current = setInterval(() => {
+      if (mountedRef.current && backendStatus === 'online') {
+        fetchDashboardData(false);
+      }
+    }, REFRESH_INTERVAL);
+    
+    return () => {
+      mountedRef.current = false;
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
+    };
+  }, [backendStatus]);
+
+  // Calculate anomalies count
+  const anomaliesCount = predictions?.filter((p: any) => p.prediction === 'anomaly').length || 0;
+  
+  if (isLoading) {
+    return (
+      <div className={gradientClass}>
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+          <CardSkeleton />
+        </div>
+      </div>
+    );
+  }
+  
+  return (
+    <div className={gradientClass}>
+      <BackendOnlineBanner />
+      <div className="max-w-[1920px] mx-auto px-6 py-6">
+        {/* Top Header Section */}
+        <div className="mb-6">
+          {/* Wichtigste Regel */}
+          <div className="bg-white/90 rounded-xl p-4 border border-slate-200 shadow-sm mb-6">
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-lg font-bold text-slate-900">❗</span>
+              <h2 className="text-lg font-semibold text-slate-900">Wichtigste Regel:</h2>
+            </div>
+            <p className="text-slate-700 font-medium">Es gibt keine fixen Grenzwerte. Alles wird relativ zur Baseline des Materials berechnet.</p>
+            <div className="mt-3 text-sm text-slate-600">
+              <p>Jede Skala basiert auf:</p>
+              <ul className="list-disc list-inside mt-1 space-y-1">
+                <li>Baseline-Mittelwert</li>
+                <li>Normaler Schwankung (σ oder empirisch)</li>
+                <li>Zeitliche Stabilität (Rolling Window)</li>
+              </ul>
+            </div>
+          </div>
+
+          {/* Status-Logik */}
+          <div className="bg-white/90 rounded-xl p-4 border border-slate-200 shadow-sm mb-6">
+            <h2 className="text-lg font-semibold text-slate-900 mb-3">🟢🟠🔴 Status-Logik (global)</h2>
+            <div className="grid grid-cols-3 gap-4">
+              <div className="flex items-center gap-2">
+                <span className="text-2xl">🟢</span>
+                <div>
+                  <div className="font-semibold text-slate-900">GREEN</div>
+                  <div className="text-sm text-slate-600">Prozess stabil, innerhalb der Baseline</div>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-2xl">🟠</span>
+                <div>
+                  <div className="font-semibold text-slate-900">ORANGE</div>
+                  <div className="text-sm text-slate-600">Abweichung / Drift / Instabilität</div>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-2xl">🔴</span>
+                <div>
+                  <div className="font-semibold text-slate-900">RED</div>
+                  <div className="text-sm text-slate-600">Kritische Abweichung / Produktionsrisiko</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Machine and Material Selection - Static Display */}
+          <div className="bg-white/90 rounded-xl p-4 border border-slate-200 shadow-sm mb-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-lg font-semibold text-slate-900 mb-1">Produktionskonfiguration</h2>
+                <p className="text-sm text-slate-600">Maschine und Material für die Überwachung</p>
+              </div>
+              <div className="flex gap-6">
+                <div className="flex-1 max-w-xs">
+                  <label className="block text-xs font-medium text-slate-500 mb-1">Maschine</label>
+                  <div className="w-full bg-white border border-slate-300 rounded-md px-4 py-3 text-sm font-medium text-slate-900">
+                    {selectedMachine}
+                  </div>
+                </div>
+                <div className="flex-1 max-w-xs">
+                  <label className="block text-xs font-medium text-slate-500 mb-1">Material</label>
+                  <div className="w-full bg-white border border-slate-300 rounded-md px-4 py-3 text-sm font-medium text-slate-900">
+                    {selectedMaterial}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex justify-between items-start mb-4">
+            <div>
+              <h1 className="text-3xl font-bold text-slate-900 mb-2">
+                Extruder Überwachungsdashboard
+              </h1>
+              <p className="text-slate-600 text-sm">
+                Predictive Maintenance für Kunststoffextrusion
+              </p>
+            </div>
+          </div>
+          
+          {/* Status Cards Row */}
+          <div className="flex gap-4 mb-4">
+            <div className="bg-white/90 border border-slate-200 rounded-lg px-4 py-2 shadow-sm">
+              <span className="text-xs text-slate-500 font-medium">AI SERVICE</span>
+              <div className="text-slate-900 font-semibold">
+                {isFallback || !aiStatus ? 'Offline' : (aiStatus.status === 'healthy' ? 'Healthy' : 'Degraded')}
+              </div>
+            </div>
+            <div className="bg-white/90 border border-slate-200 rounded-lg px-4 py-2 shadow-sm">
+              <span className="text-xs text-slate-500 font-medium">MSSQL</span>
+              <div className="text-slate-900 font-semibold">
+                {!mssqlStatus
+                  ? 'Unknown'
+                  : (!mssqlStatus.configured ? 'Not Configured' : (mssqlStatus.last_error ? 'Error' : 'Connected'))}
+              </div>
+              {mssqlStatus?.last_error ? (
+                <div className="text-xs text-rose-700 mt-1 max-w-[260px] truncate" title={String(mssqlStatus.last_error)}>
+                  {String(mssqlStatus.last_error)}
+                </div>
+              ) : null}
+            </div>
+            <div className="bg-white/90 border border-slate-200 rounded-lg px-4 py-2 flex items-center gap-2 shadow-sm">
+              <div className="w-2 h-2 bg-emerald-500 rounded-full"></div>
+              <div>
+                <span className="text-xs text-slate-500 font-medium">SYSTEM STATUS</span>
+                <div className="text-slate-900 font-semibold">All Systems Operational</div>
+              </div>
+            </div>
+          </div>
+
+          {mssqlStatus && mssqlStatus.configured && mssqlStatus.last_error && (
+            <div className="mb-4 text-sm text-rose-800 bg-rose-50 border border-rose-200 rounded-lg px-4 py-2">
+              MSSQL error: {String(mssqlStatus.last_error)}
+            </div>
+          )}
+          
+          {/* Controls Row - Removed */}
+        </div>
+        
+        {/* Sensor Monitors - Removed */}
+
+        {/* MSSQL Extruder Latest Rows */}
+        <div className="mb-6">
+          <h2 className="text-xl font-semibold text-slate-900 mb-4">MSSQL Extruder (Latest)</h2>
+          {!mssqlStatus?.configured ? (
+            <div className="bg-white/90 border border-slate-200 rounded-xl p-4 text-slate-700">
+              MSSQL not configured. Set backend env vars: MSSQL_HOST, MSSQL_USER, MSSQL_PASSWORD.
+            </div>
+          ) : mssqlStatus?.last_error ? (
+            <div className="bg-rose-50 border border-rose-200 rounded-xl p-4 text-rose-800">
+              Unable to load MSSQL data: {String(mssqlStatus.last_error)}
+            </div>
+          ) : (
+            <div className="bg-white/90 border border-slate-200 rounded-xl p-4 overflow-x-auto">
+              <table className="min-w-full text-sm">
+                <thead className="text-slate-600">
+                  <tr>
+                    <th className="text-left py-2 pr-4">TrendDate</th>
+                    <th className="text-left py-2 pr-4">ScrewSpeed_rpm</th>
+                    <th className="text-left py-2 pr-4">Pressure_bar</th>
+                    <th className="text-left py-2 pr-4">Temp_Zone1_C</th>
+                    <th className="text-left py-2 pr-4">Temp_Zone2_C</th>
+                    <th className="text-left py-2 pr-4">Temp_Zone3_C</th>
+                    <th className="text-left py-2 pr-4">Temp_Zone4_C</th>
+                  </tr>
+                </thead>
+                <tbody className="text-slate-900">
+                  {(mssqlRows || []).slice(-15).map((r: any, idx: number) => (
+                    <tr key={idx} className="border-t border-slate-100">
+                      <td className="py-2 pr-4 whitespace-nowrap">{r?.TrendDate ?? ''}</td>
+                      <td className="py-2 pr-4">{r?.ScrewSpeed_rpm ?? ''}</td>
+                      <td className="py-2 pr-4">{r?.Pressure_bar ?? ''}</td>
+                      <td className="py-2 pr-4">{r?.Temp_Zone1_C ?? ''}</td>
+                      <td className="py-2 pr-4">{r?.Temp_Zone2_C ?? ''}</td>
+                      <td className="py-2 pr-4">{r?.Temp_Zone3_C ?? ''}</td>
+                      <td className="py-2 pr-4">{r?.Temp_Zone4_C ?? ''}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+
+        {/* KPI Cards Section */}
+        <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 mb-6">
+          {/* Schneckendrehzahl */}
+          <div className="bg-white/90 rounded-xl p-6 border border-slate-200 shadow-sm relative overflow-hidden">
+            <div className="relative z-10">
+              <div className="text-sm font-medium text-slate-500 mb-2">1️⃣ Schneckendrehzahl (ScrewSpeed_rpm)</div>
+              <div className="text-5xl font-bold mb-2">
+                <span className={
+                  mssqlDerived?.risk?.sensors?.ScrewSpeed_rpm === 'red' ? 'text-rose-600' :
+                  mssqlDerived?.risk?.sensors?.ScrewSpeed_rpm === 'yellow' ? 'text-amber-600' :
+                  mssqlDerived?.risk?.sensors?.ScrewSpeed_rpm === 'green' ? 'text-emerald-600' :
+                  'text-slate-400'
+                }>
+                  {mssqlRows?.[0]?.ScrewSpeed_rpm || '--'}
+                </span>
+                <span className="text-2xl text-slate-500 ml-2">rpm</span>
+              </div>
+              <div className="text-sm text-slate-600 mb-4">
+                {selectedMachine}
+              </div>
+              <div className="text-xs text-slate-600">
+                {mssqlDerived?.risk?.sensors?.ScrewSpeed_rpm === 'green' && 
+                  "🟢 Schneckendrehzahl stabil. Ruhiger Materialdurchsatz im optimalen Bereich für dieses Material."}
+                {mssqlDerived?.risk?.sensors?.ScrewSpeed_rpm === 'yellow' && 
+                  "🟠 Schneckendrehzahl weicht vom Referenzbereich ab. Mögliche Veränderung des Materialdurchsatzes oder beginnende Prozessinstabilität."}
+                {mssqlDerived?.risk?.sensors?.ScrewSpeed_rpm === 'red' && 
+                  "🔴 Schneckendrehzahl außerhalb des materialabhängigen Betriebsfensters. Risiko für Druckinstabilität, Qualitätsschwankungen oder Werkzeugbelastung."}
+              </div>
+            </div>
+          </div>
+
+          {/* Schmelzedruck */}
+          <div className="bg-white/90 rounded-xl p-6 border border-slate-200 shadow-sm relative overflow-hidden">
+            <div className="relative z-10">
+              <div className="text-sm font-medium text-slate-500 mb-2">2️⃣ Schmelzedruck (Pressure_bar)</div>
+              <div className="text-5xl font-bold mb-2">
+                <span className={
+                  mssqlDerived?.risk?.sensors?.Pressure_bar === 'red' ? 'text-rose-600' :
+                  mssqlDerived?.risk?.sensors?.Pressure_bar === 'yellow' ? 'text-amber-600' :
+                  mssqlDerived?.risk?.sensors?.Pressure_bar === 'green' ? 'text-emerald-600' :
+                  'text-slate-400'
+                }>
+                  {mssqlRows?.[0]?.Pressure_bar || '--'}
+                </span>
+                <span className="text-2xl text-slate-500 ml-2">bar</span>
+              </div>
+              <div className="text-sm text-slate-600 mb-4">
+                {selectedMaterial}
+              </div>
+              <div className="text-xs text-slate-600">
+                {mssqlDerived?.risk?.sensors?.Pressure_bar === 'green' && 
+                  "🟢 Prozessdruck stabil. Gleichmäßiger Materialfluss ohne Anzeichen von Verstopfung oder Überlast."}
+                {mssqlDerived?.risk?.sensors?.Pressure_bar === 'yellow' && 
+                  "🟠 Abweichender Prozessdruck. Mögliche Änderungen in Materialviskosität, Temperaturverteilung oder beginnende Ablagerungen."}
+                {mssqlDerived?.risk?.sensors?.Pressure_bar === 'red' && 
+                  "🔴 Kritische Druckabweichung. Erhöhtes Risiko für Werkzeugüberlast, Materialabbau oder Produktionsstopp."}
+              </div>
+            </div>
+          </div>
+
+          {/* Durchschnittstemperatur */}
+          <div className="bg-white/90 rounded-xl p-6 border border-slate-200 shadow-sm relative overflow-hidden">
+            <div className="relative z-10">
+              <div className="text-sm font-medium text-slate-500 mb-2">4️⃣ Durchschnittstemperatur (Temp_Avg)</div>
+              <div className="text-5xl font-bold mb-2">
+                <span className={
+                  mssqlDerived?.risk?.overall === 'red' ? 'text-rose-600' :
+                  mssqlDerived?.risk?.overall === 'yellow' ? 'text-amber-600' :
+                  mssqlDerived?.risk?.overall === 'green' ? 'text-emerald-600' :
+                  'text-slate-400'
+                }>
+                  {mssqlDerived?.derived?.Temp_Avg?.current?.toFixed(1) || '--'}
+                </span>
+                <span className="text-2xl text-slate-500 ml-2">°C</span>
+              </div>
+              <div className="text-sm text-slate-600 mb-4">
+                {selectedMaterial}
+              </div>
+              <div className="text-xs text-slate-600">
+                {mssqlDerived?.risk?.overall === 'green' && 
+                  "🟢 Gesamte thermische Belastung im stabilen Bereich."}
+                {mssqlDerived?.risk?.overall === 'yellow' && 
+                  "🟠 Thermische Abweichung. Prozess driftet vom optimalen Energie- und Schmelzfenster."}
+                {mssqlDerived?.risk?.overall === 'red' && 
+                  "🔴 Kritische thermische Abweichung. Erhöhtes Risiko für Materialabbau oder instabile Schmelze."}
+              </div>
+            </div>
+          </div>
+
+          {/* Temperaturspreizung */}
+          <div className="bg-white/90 rounded-xl p-6 border border-slate-200 shadow-sm relative overflow-hidden">
+            <div className="relative z-10">
+              <div className="text-sm font-medium text-slate-500 mb-2">5️⃣ Temperaturspreizung (Temp_Spread)</div>
+              <div className="text-5xl font-bold mb-2">
+                <span className={
+                  (mssqlDerived?.derived?.Temp_Spread?.current || 0) > 8 ? 'text-rose-600' :
+                  (mssqlDerived?.derived?.Temp_Spread?.current || 0) > 5 ? 'text-amber-600' :
+                  'text-emerald-600'
+                }>
+                  {mssqlDerived?.derived?.Temp_Spread?.current?.toFixed(1) || '--'}
+                </span>
+                <span className="text-2xl text-slate-500 ml-2">°C</span>
+              </div>
+              <div className="text-sm text-slate-600 mb-4">
+                {selectedMachine}
+              </div>
+              <div className="text-xs text-slate-600">
+                {(mssqlDerived?.derived?.Temp_Spread?.current || 0) <= 5 && 
+                  "🟢 Homogene Temperaturverteilung. Saubere und gleichmäßige Plastifizierung."}
+                {(mssqlDerived?.derived?.Temp_Spread?.current || 0) > 5 && (mssqlDerived?.derived?.Temp_Spread?.current || 0) <= 8 && 
+                  "🟠 Temperaturzonen beginnen zu divergieren. Mögliche Heiz- oder Regelabweichungen."}
+                {(mssqlDerived?.derived?.Temp_Spread?.current || 0) > 8 && 
+                  "🔴 Starke Temperaturspreizung. Hohe Wahrscheinlichkeit für Prozessinstabilität, Sensor- oder Heizprobleme."}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Temperaturzonen */}
+        <div className="mb-6">
+          <h2 className="text-xl font-semibold text-slate-900 mb-4">3️⃣ Temperaturzonen (Zone 1–4)</h2>
+          <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
+            {['Zone1_C', 'Zone2_C', 'Zone3_C', 'Zone4_C'].map((zone, index) => (
+              <div key={zone} className="bg-white/90 rounded-xl p-4 border border-slate-200 shadow-sm">
+                <div className="text-sm font-medium text-slate-500 mb-2">Zone {index + 1}</div>
+                <div className="text-3xl font-bold mb-2">
+                  <span className={
+                    mssqlDerived?.risk?.sensors[`Temp_${zone}`] === 'red' ? 'text-rose-600' :
+                    mssqlDerived?.risk?.sensors[`Temp_${zone}`] === 'yellow' ? 'text-amber-600' :
+                    mssqlDerived?.risk?.sensors[`Temp_${zone}`] === 'green' ? 'text-emerald-600' :
+                    'text-slate-400'
+                  }>
+                    {mssqlRows?.[0]?.[`Temp_${zone}`] || '--'}
+                  </span>
+                  <span className="text-lg text-slate-500 ml-1">°C</span>
+                </div>
+                <div className="text-xs text-slate-600">
+                  {mssqlDerived?.risk?.sensors[`Temp_${zone}`] === 'green' && 
+                    "🟢 Temperaturzone im materialgerechten Bereich. Saubere Erwärmung ohne Auffälligkeiten."}
+                  {mssqlDerived?.risk?.sensors[`Temp_${zone}`] === 'yellow' && 
+                    "🟠 Temperaturabweichung festgestellt. Mögliche Änderungen im Heizverhalten oder Materialfluss."}
+                  {mssqlDerived?.risk?.sensors[`Temp_${zone}`] === 'red' && 
+                    "🔴 Kritische Temperaturabweichung. Risiko für unvollständige Plastifizierung, Materialabbau oder Qualitätsprobleme."}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Stabilität */}
+        <div className="mb-6">
+          <h2 className="text-xl font-semibold text-slate-900 mb-4">6️⃣ Stabilität (Time Spread / Fluktuation)</h2>
+          <div className="bg-white/90 rounded-xl p-6 border border-slate-200 shadow-sm">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              <div>
+                <div className="text-sm font-medium text-slate-500 mb-2">Prozessstabilität</div>
+                <div className="text-3xl font-bold mb-2">
+                  <span className={
+                    anomaliesCount > 2 ? 'text-rose-600' :
+                    anomaliesCount > 0 ? 'text-amber-600' :
+                    'text-emerald-600'
+                  }>
+                    {anomaliesCount > 2 ? '🔴 Stark schwankend' :
+                     anomaliesCount > 0 ? '🟠 Erhöhte Varianz' :
+                     '🟢 Geringe Varianz'}
+                  </span>
+                </div>
+                <div className="text-xs text-slate-600">
+                  {anomaliesCount === 0 && 
+                    "🟢 Prozess stabil. Keine ungewöhnlichen Schwankungen."}
+                  {anomaliesCount > 0 && anomaliesCount <= 2 && 
+                    "🟠 Erhöhte Prozessunruhe. Frühindikator für mögliche Abweichungen."}
+                  {anomaliesCount > 2 && 
+                    "🔴 Instabiler Prozess. Hohe Wahrscheinlichkeit für Qualitätsprobleme oder Störungen."}
+                </div>
+              </div>
+              <div>
+                <div className="text-sm font-medium text-slate-500 mb-2">Anomalien in letzter Zeit</div>
+                <div className="text-3xl font-bold mb-2">{anomaliesCount}</div>
+                <div className="text-xs text-slate-600">
+                  Anzahl der erkannten Abweichungen im Analysefenster
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Prozessbewertung */}
+        <div className="mb-6">
+          <h2 className="text-xl font-semibold text-slate-900 mb-4">7️⃣ Prozessbewertung (Gesamttext)</h2>
+          <div className="bg-white/90 rounded-xl p-6 border border-slate-200 shadow-sm">
+            <div className="text-lg font-medium text-slate-900 mb-3">
+              {mssqlDerived?.risk?.overall === 'green' && "🟢 GRÜNER PROZESSZUSTAND"}
+              {mssqlDerived?.risk?.overall === 'yellow' && "🟠 ORANGER PROZESSZUSTAND"}
+              {mssqlDerived?.risk?.overall === 'red' && "🔴 ROTER PROZESSZUSTAND"}
+            </div>
+            <div className="text-slate-700">
+              {mssqlDerived?.risk?.overall === 'green' && 
+                "Der Extrusionsprozess ist stabil. Alle wesentlichen Parameter liegen im materialabhängigen Referenzbereich. Kein Handlungsbedarf."}
+              {mssqlDerived?.risk?.overall === 'yellow' && 
+                "Der Prozess zeigt Abweichungen vom optimalen Betriebszustand. Empfehlung: Überwachung verstärken und mögliche Ursachen prüfen."}
+              {mssqlDerived?.risk?.overall === 'red' && 
+                "Kritischer Prozesszustand. Hohes Risiko für Chargenverlust oder Anlagenbelastung. Eingriff empfohlen."}
+            </div>
+          </div>
+        </div>
+        
+        {/* Bottom Widgets - Removed */}
+                    <div key={key} className="flex justify-between py-0.5">
+                      <span>{key.replace(/_/g, ' ')}</span>
+                      <span className="font-medium">±{spread}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* BASELINES SECTION */}
+        <div className="mb-6">
+          <h2 className="text-xl font-semibold text-slate-900 mb-4">Baselines</h2>
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            {/* Current Baseline */}
+            <div className="bg-white/90 rounded-xl p-6 border border-slate-200 shadow-sm">
+              <h3 className="text-lg font-medium text-slate-900 mb-4">Current Baseline</h3>
+              <div className="space-y-3">
+                <div className="flex justify-between items-center">
+                  <span className="text-sm text-slate-600">Screw Speed</span>
+                  <span className="text-sm font-medium text-slate-900">
+                    {mssqlDerived?.baseline?.ScrewSpeed_rpm?.mean ? 
+                      `${mssqlDerived.baseline.ScrewSpeed_rpm.mean.toFixed(1)} ± ${mssqlDerived.baseline.ScrewSpeed_rpm.std?.toFixed(1)}` : 
+                      '--'}
+                  </span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-sm text-slate-600">Pressure</span>
+                  <span className="text-sm font-medium text-slate-900">
+                    {mssqlDerived?.baseline?.Pressure_bar?.mean ? 
+                      `${mssqlDerived.baseline.Pressure_bar.mean.toFixed(1)} ± ${mssqlDerived.baseline.Pressure_bar.std?.toFixed(1)}` : 
+                      '--'}
+                  </span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-sm text-slate-600">Avg Temperature</span>
+                  <span className="text-sm font-medium text-slate-900">
+                    {mssqlDerived?.derived?.Temp_Avg?.baseline ? 
+                      `${mssqlDerived.derived.Temp_Avg.baseline.toFixed(1)}°C` : 
+                      '--'}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Learning Mode */}
+            <div className="bg-white/90 rounded-xl p-6 border border-slate-200 shadow-sm">
+              <h3 className="text-lg font-medium text-slate-900 mb-4">Learning Mode</h3>
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-slate-600">Status</span>
+                  <span className="px-2 py-1 text-xs font-medium bg-emerald-100 text-emerald-800 rounded-full">
+                    Active
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-slate-600">Samples Collected</span>
+                  <span className="text-sm font-medium text-slate-900">1,247</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-slate-600">Confidence</span>
+                  <span className="text-sm font-medium text-slate-900">94%</span>
+                </div>
+                <button className="w-full mt-4 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 transition-colors">
+                  Save Current Baseline
+                </button>
+              </div>
+            </div>
+
+            {/* Baseline History */}
+            <div className="bg-white/90 rounded-xl p-6 border border-slate-200 shadow-sm">
+              <h3 className="text-lg font-medium text-slate-900 mb-4">Baseline History</h3>
+              <div className="space-y-2">
+                <div className="p-3 bg-slate-50 rounded-lg border border-slate-200">
+                  <div className="flex justify-between items-center mb-1">
+                    <span className="text-sm font-medium text-slate-900">Current</span>
+                    <span className="text-xs text-slate-500">Active now</span>
+                  </div>
+                  <div className="text-xs text-slate-600">
+                    {selectedMachine} • {selectedMaterial}
+                  </div>
+                </div>
+                <div className="p-3 bg-white rounded-lg border border-slate-200">
+                  <div className="flex justify-between items-center mb-1">
+                    <span className="text-sm font-medium text-slate-900">Previous</span>
+                    <span className="text-xs text-slate-500">2 days ago</span>
+                  </div>
+                  <div className="text-xs text-slate-600">
+                    {selectedMachine} • {selectedMaterial}
+                  </div>
+                </div>
+                <div className="p-3 bg-white rounded-lg border border-slate-200">
+                  <div className="flex justify-between items-center mb-1">
+                    <span className="text-sm font-medium text-slate-900">Baseline v3</span>
+                    <span className="text-xs text-slate-500">1 week ago</span>
+                  </div>
+                  <div className="text-xs text-slate-600">
+                    {selectedMachine} • Material 2
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Existing KPI Cards - 4 Large Cards */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-6">
+          {/* AI PREDICTIONS - Purple */}
+          <div className="bg-white/90 rounded-xl p-6 border border-purple-200 shadow-sm relative overflow-hidden">
+            <div className="relative z-10">
+              <div className="text-sm font-medium text-slate-500 mb-2">{t('dashboard.kpiAiPredictions')}</div>
+              <div className="text-5xl font-bold text-slate-900 mb-2">
+                {isFallback ? '--' : (predictions?.length || overview?.predictions?.last_24h || 0)}
+              </div>
+              <div className="flex items-center gap-2 mb-4">
+                {!isFallback && predictions.length > 0 && (
+                  <>
+                    <span className="bg-purple-50 text-purple-800 px-3 py-1 rounded text-sm font-medium border border-purple-200">
+                      {anomaliesCount} {t('dashboard.kpiAnomalies')}
+                    </span>
+                    <span className={`px-2 py-1 rounded text-xs font-medium ${
+                      anomaliesCount > 2 ? 'bg-rose-50 text-rose-700 border border-rose-200' :
+                      anomaliesCount > 0 ? 'bg-amber-50 text-amber-800 border border-amber-200' :
+                      'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                    }`}>
+                      {anomaliesCount > 2 ? t('dashboard.kpiStatusCritical') : anomaliesCount > 0 ? t('dashboard.kpiStatusEarlyAnomaly') : t('dashboard.kpiStatusNormal')}
+                    </span>
+                  </>
+                )}
+                {isFallback && (
+                  <span className="text-xs text-slate-500">(Offline)</span>
+                )}
+              </div>
+              {/* Waveform graph placeholder */}
+              <div className="h-16 mt-4 opacity-50">
+                <svg viewBox="0 0 200 60" className="w-full h-full">
+                  <path
+                    d="M 0 30 Q 25 20, 50 30 T 100 30 T 150 30 T 200 30"
+                    stroke="white"
+                    strokeWidth="2"
+                    fill="none"
+                  />
+                  <path
+                    d="M 0 40 Q 25 35, 50 40 T 100 40 T 150 40 T 200 40"
+                    stroke="white"
+                    strokeWidth="1.5"
+                    fill="none"
+                    opacity="0.7"
+                  />
+                </svg>
+              </div>
+            </div>
+          </div>
+          
+          {/* ANOMALIES FOUND - Orange/Yellow */}
+          <div className="bg-white/90 rounded-xl p-6 border border-amber-200 shadow-sm relative overflow-hidden">
+            <div className="relative z-10">
+              <div className="text-sm font-medium text-slate-500 mb-2">{t('dashboard.kpiAnomaliesFound')}</div>
+              <div className="text-5xl font-bold text-slate-900 mb-2">
+                {isFallback ? '--' : (anomaliesCount || overview?.alarms?.active || 0)}
+              </div>
+              <div className="flex items-center gap-2 mb-4">
+                {!isFallback && (
+                  <>
+                    <span className="bg-amber-50 text-amber-900 px-3 py-1 rounded text-sm font-medium border border-amber-200">
+                      {anomaliesCount > 0 ? t('dashboard.kpiActionRequired') : t('dashboard.kpiAllClear')}
+                    </span>
+                    {predictions.length > 0 && (
+                      <span className="text-xs text-slate-500">
+                        Score: {predictions.find((p: any) => p.prediction === 'anomaly')?.score?.toFixed(2) || '0.00'}
+                      </span>
+                    )}
+                  </>
+                )}
+                {isFallback && (
+                  <span className="text-xs text-slate-500">(Offline)</span>
+                )}
+              </div>
+              {/* Waveform graph */}
+              <div className="h-16 mt-4 opacity-50">
+                <svg viewBox="0 0 200 60" className="w-full h-full">
+                  <path
+                    d="M 0 30 Q 25 10, 50 30 T 100 30 T 150 30 T 200 30"
+                    stroke="white"
+                    strokeWidth="2"
+                    fill="none"
+                  />
+                  <path
+                    d="M 0 40 Q 25 25, 50 40 T 100 40 T 150 40 T 200 40"
+                    stroke="white"
+                    strokeWidth="1.5"
+                    fill="none"
+                    opacity="0.7"
+                  />
+                </svg>
+              </div>
+            </div>
+          </div>
+          
+          {/* MACHINES - Green */}
+          <div className="bg-white/90 rounded-xl p-6 border border-emerald-200 shadow-sm relative overflow-hidden">
+            <div className="relative z-10">
+              <div className="text-sm font-medium text-slate-500 mb-2">{t('dashboard.kpiMachines')}</div>
+              <div className="text-5xl font-bold text-slate-900 mb-2">
+                {isFallback ? '--' : (overview?.machines?.total || 0)}
+              </div>
+              <div className="text-slate-600 text-sm mb-4">
+                {isFallback ? '--' : (overview?.machines?.online || 0)} {isFallback ? '' : t('dashboard.kpiOnline')}
+              </div>
+              {/* Waveform graph */}
+              <div className="h-16 mt-4 opacity-50">
+                <svg viewBox="0 0 200 60" className="w-full h-full">
+                  <path
+                    d="M 0 30 Q 25 25, 50 30 T 100 30 T 150 30 T 200 30"
+                    stroke="white"
+                    strokeWidth="2"
+                    fill="none"
+                  />
+                  <path
+                    d="M 0 40 Q 25 35, 50 40 T 100 40 T 150 40 T 200 40"
+                    stroke="white"
+                    strokeWidth="1.5"
+                    fill="none"
+                    opacity="0.7"
+                  />
+                </svg>
+              </div>
+            </div>
+          </div>
+          
+          {/* ACTIVE ALARMS - Red */}
+          <div className="bg-white/90 rounded-xl p-6 border border-rose-200 shadow-sm relative overflow-hidden">
+            <div className="relative z-10">
+              <div className="text-sm font-medium text-slate-500 mb-2">{t('dashboard.kpiActiveAlarms')}</div>
+              <div className="text-5xl font-bold text-slate-900 mb-2">
+                {isFallback ? '--' : (overview?.alarms?.active || 0)}
+              </div>
+              <div className="flex items-center gap-2 mb-4">
+                <span className="bg-rose-50 text-rose-800 px-3 py-1 rounded text-sm font-medium border border-rose-200">
+                  {isFallback
+                    ? t('dashboard.kpiNoLiveData')
+                    : (overview?.alarms?.active === 0 ? t('dashboard.kpiAllClear') : t('dashboard.kpiActive'))}
+                </span>
+                {isFallback && (
+                  <span className="text-xs text-slate-500">(Offline)</span>
+                )}
+              </div>
+              {/* Waveform graph */}
+              <div className="h-16 mt-4 opacity-50">
+                <svg viewBox="0 0 200 60" className="w-full h-full">
+                  <path
+                    d="M 0 30 Q 25 30, 50 30 T 100 30 T 150 30 T 200 30"
+                    stroke="white"
+                    strokeWidth="2"
+                    fill="none"
+                  />
+                  <path
+                    d="M 0 40 Q 25 40, 50 40 T 100 40 T 150 40 T 200 40"
+                    stroke="white"
+                    strokeWidth="1.5"
+                    fill="none"
+                    opacity="0.7"
+                  />
+                </svg>
+              </div>
+            </div>
+          </div>
+        </div>
+        
+        {/* Bottom Widgets - Removed */}
+        
+        {/* Live Data Table - Removed */}
+        {/* OPC UA Status - Removed */}
+      </div>
+    </div>
+  );
+}

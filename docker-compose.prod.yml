@@ -1,0 +1,133 @@
+# Production Docker Compose Configuration for Netcup
+# Usage: docker-compose -f docker-compose.prod.yml up -d
+
+services:
+  postgres:
+    image: timescale/timescaledb:latest-pg15
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-pm_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-pm_db}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-pm_user}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - pm-net
+    # Remove port mapping in production for security
+    # ports:
+    #   - "5432:5432"
+
+  mqtt:
+    image: eclipse-mosquitto:2
+    restart: unless-stopped
+    volumes:
+      - ./mqtt/mosquitto.conf:/mosquitto/config/mosquitto.conf
+    ports:
+      - "1883:1883"
+    networks:
+      - pm-net
+
+  ai-service:
+    build:
+      context: ./ai_service
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      - PYTHONUNBUFFERED=1
+    networks:
+      - pm-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # Remove port mapping in production - access via backend only
+    # ports:
+    #   - "8001:8000"
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ai-service:
+        condition: service_started
+      mqtt:
+        condition: service_started
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-pm_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-pm_db}
+      AI_SERVICE_URL: http://ai-service:8000
+      MQTT_BROKER_HOST: mqtt
+      MQTT_BROKER_PORT: 1883
+      MQTT_TOPICS: ${MQTT_TOPICS:-"factory/#,edge/#,sensors/+/telemetry"}
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+      JWT_EXP_MINUTES: ${JWT_EXP_MINUTES:-60}
+      ENVIRONMENT: production
+      DEBUG: "false"
+    networks:
+      - pm-net
+    # Remove port mapping - access via nginx reverse proxy
+    # ports:
+    #   - "8000:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    command: >
+      sh -c "python scripts/wait_for_db.py &&
+             python scripts/fix_alembic_version.py 2>/dev/null || true &&
+             alembic upgrade head 2>&1 | grep -v 'already exists' || true &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2"
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        - VITE_API_URL=/api
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "3000:80"  # Changed to port 3000 to avoid conflict with other project on port 80
+      # HTTPS port (uncomment when SSL is configured)
+      # - "443:443"
+    networks:
+      - pm-net
+    volumes:
+      - ./frontend/nginx.prod.conf:/etc/nginx/conf.d/default.conf:ro
+
+  # Optional: Simulator for testing (disable in production)
+  # simulator:
+  #   build:
+  #     context: ./simulator
+  #     dockerfile: Dockerfile
+  #   restart: unless-stopped
+  #   depends_on:
+  #     - mqtt
+  #   environment:
+  #     MQTT_BROKER_HOST: mqtt
+  #     MQTT_BROKER_PORT: 1883
+  #   networks:
+  #     - pm-net
+
+networks:
+  pm-net:
+    driver: bridge
+
+volumes:
+  postgres-data:
