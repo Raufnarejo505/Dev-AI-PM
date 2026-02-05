@@ -219,41 +219,36 @@ async def startup_event():
         except Exception as e:
             logger.error(f"Clean-slate reset failed: {e}")
 
-    # Enable MQTT consumer to receive data from OPC UA edge gateway
-    mqtt_ingestor.start(loop)
-    logger.info("MQTT consumer ENABLED - receiving data from OPC UA edge gateway")
-    # Start OPC UA connector worker (no‑op if no active sources yet)
-    opcua_connector.start(loop)
-
+    # DISABLED: MQTT and OPC UA - using direct database simulation instead
+    # mqtt_ingestor.start(loop)
+    # logger.info("MQTT consumer ENABLED - receiving data from OPC UA edge gateway")
+    # opcua_connector.start(loop)
+    # logger.info("Startup complete - OPC UA connector ready")
+    
+    # ENABLED: Direct sensor data simulation for machine state detection
+    from app.tasks.sensor_data_simulator import start_sensor_data_simulation
+    loop.create_task(start_sensor_data_simulation(interval_seconds=2))
+    logger.info("Direct sensor data simulation ENABLED - generating realistic machine state transitions")
+    
     # Optional: MSSQL read-only extruder poller (no OPC UA). Opt-in via env vars.
     mssql_extruder_poller.start(loop)
     await asyncio.sleep(1)
-    logger.info("Startup complete - OPC UA connector ready")
-    
-    # DISABLED: Live data generator - disabled to focus on OPC UA data only
-    # Uncomment below to re-enable dummy data generation
-    # from app.tasks.live_data_generator import start_live_data_generator
-    # loop.create_task(start_live_data_generator(interval_seconds=5))
-    # logger.info("Live data generator started (5s interval)")
-    logger.info("Live data generator DISABLED - only OPC UA data will be ingested")
-    logger.info("Live data generator disabled - only OPC UA data will be ingested")
+    logger.info("Startup complete - direct simulation ready")
 
-    # DISABLED: Demo machines seeding - removed to focus on OPC UA only
-    # Only keep demo users for login access
+    # ENABLED: Demo machines for testing machine state detection
     try:
-        from app.tasks.seed_demo_data import seed_demo_users
+        from app.tasks.seed_demo_data import seed_demo_users, seed_sample_machines
 
         logger.info("Ensuring demo users exist (admin/engineer/viewer)")
         await seed_demo_users()
         logger.info("Demo users verified/created")
         
-        # DISABLED: Demo machines - OPC UA will create machines automatically
-        # logger.info("Ensuring demo machines exist (Pump-01, Motor-02, Compressor-A, Conveyor-B2)")
-        # await seed_sample_machines()
-        logger.info("Demo machines disabled - machines will be created from OPC UA sources only")
+        logger.info("Ensuring demo machines exist for state testing")
+        await seed_sample_machines()
+        logger.info("Demo machines created for machine state detection")
     except Exception as e:
         # Don't block startup if seeding fails (e.g., schema differences)
-        logger.error(f"Failed to ensure demo users: {e}")
+        logger.error(f"Failed to ensure demo data: {e}")
     
     # Verify email configuration if available (non-blocking best-effort check)
     verify_email = getattr(notification_service, "verify_email_transport", None)
@@ -263,7 +258,9 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    mqtt_ingestor.stop()
-    await opcua_connector.stop()
+    # DISABLED: MQTT and OPC UA shutdown
+    # mqtt_ingestor.stop()
+    # await opcua_connector.stop()
     await mssql_extruder_poller.stop()
+    logger.info("Backend shutdown complete")
 

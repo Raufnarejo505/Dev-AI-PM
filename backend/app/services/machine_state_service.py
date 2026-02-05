@@ -462,3 +462,73 @@ def get_all_machine_states() -> Dict[str, MachineStateInfo]:
     """Get current states of all machines"""
     return {machine_id: detector.get_current_state() 
             for machine_id, detector in _machine_detectors.items()}
+
+async def process_sensor_data_for_state(
+    session, machine_id: str, sensor_type: str, value: float, timestamp: datetime
+):
+    """Process incoming sensor data for machine state detection"""
+    try:
+        # Get or create detector for this machine
+        detector = get_machine_detector(machine_id)
+        
+        # Map sensor types to detector fields
+        sensor_mapping = {
+            'temperature': 'temp_zone_1',  # Use zone 1 for general temperature
+            'pressure': 'pressure_bar',
+            'vibration': None,  # Not directly mapped, but could affect derived metrics
+            'motor_current': 'motor_load',
+            'rpm': 'screw_rpm'
+        }
+        
+        field_name = sensor_mapping.get(sensor_type.lower())
+        if field_name:
+            # Create sensor reading with the new value
+            current_state = detector.get_current_state()
+            
+            # Get existing sensor data or create new reading
+            reading = SensorReading(timestamp=timestamp)
+            
+            # Update the specific field
+            if field_name == 'temp_zone_1':
+                reading.temp_zone_1 = value
+            elif field_name == 'pressure_bar':
+                reading.pressure_bar = value
+            elif field_name == 'motor_load':
+                reading.motor_load = value
+            elif field_name == 'screw_rpm':
+                reading.screw_rpm = value
+            
+            # Process the reading for state detection
+            detector.process_reading(reading)
+            
+            # Store state in database if changed
+            new_state = detector.get_current_state()
+            if new_state.state != current_state.state:
+                await store_machine_state_in_db(session, machine_id, new_state)
+                
+    except Exception as e:
+        logger.error(f"Error processing sensor data for machine state: {e}")
+
+async def store_machine_state_in_db(session, machine_id: str, state_info: MachineStateInfo):
+    """Store machine state transition in database"""
+    try:
+        from app.models.machine_state import MachineState, MachineStateEnum
+        
+        # Create machine state record
+        machine_state = MachineState(
+            machine_id=machine_id,
+            state=MachineStateEnum(state_info.state.value),
+            confidence=state_info.confidence,
+            state_since=state_info.state_since,
+            last_updated=state_info.last_updated,
+            metrics=state_info.metrics.__dict__ if state_info.metrics else {},
+            flags=state_info.flags or {}
+        )
+        
+        session.add(machine_state)
+        await session.flush()  # Get ID without committing
+        
+        logger.info(f"Stored machine state transition: {machine_id} -> {state_info.state.value}")
+        
+    except Exception as e:
+        logger.error(f"Error storing machine state in database: {e}")

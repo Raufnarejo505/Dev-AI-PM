@@ -26,7 +26,13 @@ services:
   ai-service:
     build:
       context: ./ai_service
+      dockerfile: Dockerfile.db
     restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_started
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/predictive_maintenance
     ports:
       - "8001:8000"
     networks:
