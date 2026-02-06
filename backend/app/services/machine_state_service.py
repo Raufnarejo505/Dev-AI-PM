@@ -20,8 +20,7 @@ from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
 from collections import deque
 import statistics
-
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 class MachineState(Enum):
     """Machine operating states"""
@@ -97,6 +96,7 @@ class MachineStateInfo:
     last_updated: datetime
     metrics: DerivedMetrics
     flags: Dict[str, Any] = None
+    state_duration_seconds: Optional[float] = None
 
 class StateTimer:
     """Manages hysteresis timers for state transitions"""
@@ -142,13 +142,14 @@ class MachineStateDetector:
         self.reading_buffer: deque = deque(maxlen=120)  # Assuming 1-second intervals
         self.temp_history: deque = deque(maxlen=300)   # 5 minutes for temperature slope
         
-        # Current state
+        # Current state - default to OFF when no data available
         self.current_state: MachineStateInfo = MachineStateInfo(
-            state=MachineState.UNKNOWN,
-            confidence=0.0,
+            state=MachineState.OFF,  # Default to OFF (machine is turned off)
+            confidence=0.5,  # Medium confidence for default state
             state_since=datetime.utcnow(),
             last_updated=datetime.utcnow(),
-            metrics=DerivedMetrics()
+            metrics=DerivedMetrics(),
+            state_duration_seconds=0.0
         )
         
         logger.info(f"Machine state detector initialized for {machine_id}")
@@ -178,12 +179,17 @@ class MachineStateDetector:
                 self.current_state.state = final_state
                 self.current_state.confidence = final_confidence
                 self.current_state.state_since = datetime.utcnow()
+                self.current_state.state_duration_seconds = 0.0
                 self.timer.set_state_start(final_state)
                 
                 logger.info(f"Machine {self.machine_id} state changed: {final_state.value}")
             
             self.current_state.last_updated = datetime.utcnow()
             self.current_state.metrics = metrics
+            
+            # Update state duration
+            duration = self.timer.get_state_duration(self.current_state.state)
+            self.current_state.state_duration_seconds = duration.total_seconds()
             
             return self.current_state
             
@@ -468,25 +474,52 @@ async def process_sensor_data_for_state(
 ):
     """Process incoming sensor data for machine state detection"""
     try:
-        # Get or create detector for this machine
+        logger.info(f"Entering process_sensor_data_for_state: machine_id={machine_id}, sensor_type={sensor_type}")
+        
+        # Use the global detector registry
         detector = get_machine_detector(machine_id)
         
         # Map sensor types to detector fields
         sensor_mapping = {
             'temperature': 'temp_zone_1',  # Use zone 1 for general temperature
+            'temperature sensor': 'temp_zone_1',
             'pressure': 'pressure_bar',
+            'pressure sensor': 'pressure_bar',
             'vibration': None,  # Not directly mapped, but could affect derived metrics
+            'vibration sensor': None,
             'motor_current': 'motor_load',
-            'rpm': 'screw_rpm'
+            'motor current': 'motor_load',
+            'motor current sensor': 'motor_load',
+            'rpm': 'screw_rpm',
+            'rpm sensor': 'screw_rpm',
+            'speed sensor': 'screw_rpm',
+            'load sensor': 'motor_load',
+            'current sensor': 'motor_load',
+            'torque sensor': None,  # Could be mapped to motor_load if needed
+            'flow sensor': None,
+            'oil level sensor': None
         }
         
         field_name = sensor_mapping.get(sensor_type.lower())
+        logger.info(f"Processing sensor data: machine_id={machine_id}, sensor_type={sensor_type}, field_name={field_name}")
+        
         if field_name:
-            # Create sensor reading with the new value
+            # Get current state and existing sensor data
             current_state = detector.get_current_state()
             
-            # Get existing sensor data or create new reading
+            # Create a new reading with the new value and existing values
             reading = SensorReading(timestamp=timestamp)
+            
+            # Copy existing values from current state metrics if available
+            if current_state.metrics:
+                if field_name != 'temp_zone_1' and current_state.metrics.temp_avg:
+                    reading.temp_zone_1 = current_state.metrics.temp_avg
+                if field_name != 'pressure_bar' and hasattr(current_state.metrics, 'pressure_bar') and current_state.metrics.pressure_bar:
+                    reading.pressure_bar = current_state.metrics.pressure_bar
+                if field_name != 'screw_rpm' and hasattr(current_state.metrics, 'screw_rpm') and current_state.metrics.screw_rpm:
+                    reading.screw_rpm = current_state.metrics.screw_rpm
+                if field_name != 'motor_load' and hasattr(current_state.metrics, 'motor_load') and current_state.metrics.motor_load:
+                    reading.motor_load = current_state.metrics.motor_load
             
             # Update the specific field
             if field_name == 'temp_zone_1':
@@ -499,12 +532,13 @@ async def process_sensor_data_for_state(
                 reading.screw_rpm = value
             
             # Process the reading for state detection
-            detector.process_reading(reading)
+            detector.add_reading(reading)
             
             # Store state in database if changed
             new_state = detector.get_current_state()
             if new_state.state != current_state.state:
                 await store_machine_state_in_db(session, machine_id, new_state)
+                logger.info(f"Machine {machine_id} state changed to {new_state.state.value}")
                 
     except Exception as e:
         logger.error(f"Error processing sensor data for machine state: {e}")

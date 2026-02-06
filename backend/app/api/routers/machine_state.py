@@ -46,13 +46,28 @@ async def get_all_current_states(
         # Convert to response format
         response = {}
         for machine_id, state_info in states.items():
-            response[machine_id] = MachineStateInfo(
-                machine_id=state_info.machine_id,
-                state=state_info.state,
+            # Convert dataclass to dict for Pydantic
+            metrics_dict = None
+            if state_info.metrics:
+                metrics_dict = {
+                    'temp_avg': state_info.metrics.temp_avg,
+                    'temp_spread': state_info.metrics.temp_spread,
+                    'd_temp_avg': state_info.metrics.d_temp_avg,
+                    'rpm_stable': state_info.metrics.rpm_stable,
+                    'pressure_stable': state_info.metrics.pressure_stable,
+                    'any_temp_above_min': state_info.metrics.any_temp_above_min,
+                    'all_temps_below': state_info.metrics.all_temps_below
+                }
+            
+            # Use string key for the response
+            machine_key = str(machine_id)
+            response[machine_key] = MachineStateInfo(
+                machine_id=machine_key,
+                state=state_info.state.value,
                 confidence=state_info.confidence,
                 state_since=state_info.state_since,
                 last_updated=state_info.last_updated,
-                metrics=state_info.metrics,
+                metrics=metrics_dict,
                 flags=state_info.flags,
                 state_duration_seconds=state_info.state_duration_seconds
             )
@@ -80,13 +95,26 @@ async def get_machine_current_state(
         if not state_info:
             raise HTTPException(status_code=404, detail=f"Machine {machine_id} not found")
         
+        # Convert dataclass to dict for Pydantic
+        metrics_dict = None
+        if state_info.metrics:
+            metrics_dict = {
+                'temp_avg': state_info.metrics.temp_avg,
+                'temp_spread': state_info.metrics.temp_spread,
+                'd_temp_avg': state_info.metrics.d_temp_avg,
+                'rpm_stable': state_info.metrics.rpm_stable,
+                'pressure_stable': state_info.metrics.pressure_stable,
+                'any_temp_above_min': state_info.metrics.any_temp_above_min,
+                'all_temps_below': state_info.metrics.all_temps_below
+            }
+        
         return MachineStateInfo(
-            machine_id=state_info.machine_id,
-            state=state_info.state,
+            machine_id=machine_id,
+            state=state_info.state.value,
             confidence=state_info.confidence,
             state_since=state_info.state_since,
             last_updated=state_info.last_updated,
-            metrics=state_info.metrics,
+            metrics=metrics_dict,
             flags=state_info.flags,
             state_duration_seconds=state_info.state_duration_seconds
         )

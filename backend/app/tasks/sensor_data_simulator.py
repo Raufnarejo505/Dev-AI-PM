@@ -133,10 +133,22 @@ class SensorDataSimulator:
         # Map sensor types to config keys
         sensor_mapping = {
             'temperature': 'temperature',
-            'pressure': 'pressure', 
+            'temperature sensor': 'temperature',
+            'pressure': 'pressure',
+            'pressure sensor': 'pressure',
             'vibration': 'vibration',
+            'vibration sensor': 'vibration',
             'motor_current': 'motor_current',
-            'rpm': 'rpm'
+            'motor current': 'motor_current',
+            'motor current sensor': 'motor_current',
+            'rpm': 'rpm',
+            'rpm sensor': 'rpm',
+            'speed sensor': 'rpm',
+            'load sensor': 'motor_current',
+            'current sensor': 'motor_current',
+            'torque sensor': 'motor_current',
+            'flow sensor': 'pressure',
+            'oil level sensor': 'pressure'
         }
         
         config_key = sensor_mapping.get(sensor_type.lower(), 'temperature')
@@ -202,9 +214,11 @@ class SensorDataSimulator:
                     session.add(sensor_data)
                     
                     # Process for machine state detection
+                    logger.info(f"About to process sensor data for state: machine_id={machine_id}, sensor={sensor.name}, value={value}")
                     await process_sensor_data_for_state(
                         session, machine_id, sensor.name, value, timestamp
                     )
+                    logger.info(f"Finished processing sensor data for state: machine_id={machine_id}, sensor={sensor.name}")
             
             await session.commit()
             

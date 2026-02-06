@@ -22,7 +22,7 @@ from app.schemas.machine_state import (
 )
 from app.services.machine_state_service import (
     MachineStateDetector, get_machine_detector, remove_machine_detector,
-    StateThresholds, SensorReading
+    StateThresholds, SensorReading, get_all_machine_states
 )
 
 logger = logging.getLogger(__name__)
@@ -33,7 +33,7 @@ class MachineStateService:
     
     def __init__(self, db: AsyncSession):
         self.db = db
-        self._detectors: Dict[str, MachineStateDetector] = {}
+        # Use global detector registry instead of local one
     
     async def initialize_machine_detector(self, machine_id: str) -> MachineStateDetector:
         """Initialize or get machine state detector with custom thresholds"""
@@ -64,16 +64,15 @@ class MachineStateService:
             service_thresholds = StateThresholds()
         
         detector = get_machine_detector(machine_id, service_thresholds)
-        self._detectors[machine_id] = detector
         return detector
     
     async def process_sensor_reading(self, machine_id: str, reading: SensorReading) -> MachineStateInfo:
         """Process sensor reading and update machine state"""
         try:
-            # Get or initialize detector
-            detector = await self.initialize_machine_detector(machine_id)
+            # Get detector from global registry
+            detector = get_machine_detector(machine_id)
             
-            # Get previous state for transition logging
+            # Get previous state
             previous_state = detector.get_current_state()
             
             # Process reading
@@ -100,19 +99,30 @@ class MachineStateService:
     
     async def get_current_state(self, machine_id: str) -> Optional[MachineStateInfo]:
         """Get current machine state"""
-        detector = self._detectors.get(machine_id)
-        if not detector:
-            await self.initialize_machine_detector(machine_id)
-            detector = self._detectors[machine_id]
-        
+        detector = get_machine_detector(machine_id)
         return detector.get_current_state()
     
     async def get_all_current_states(self) -> Dict[str, MachineStateInfo]:
         """Get current states of all machines"""
-        states = {}
-        for machine_id, detector in self._detectors.items():
-            states[machine_id] = detector.get_current_state()
-        return states
+        # First, ensure all machines have detectors initialized
+        await self._initialize_all_machine_detectors()
+        
+        # Use global detector registry
+        return get_all_machine_states()
+    
+    async def _initialize_all_machine_detectors(self):
+        """Initialize detectors for all machines in the database"""
+        try:
+            # Get all machines from database
+            result = await self.db.execute(select(Machine))
+            machines = result.scalars().all()
+            
+            for machine in machines:
+                # Initialize detector using global registry
+                get_machine_detector(machine.id)
+                    
+        except Exception as e:
+            logger.error(f"Error initializing machine detectors: {e}")
     
     async def get_machine_thresholds(self, machine_id: str) -> Optional[MachineStateThresholds]:
         """Get machine-specific thresholds from database"""
@@ -146,8 +156,8 @@ class MachineStateService:
             await self.db.refresh(existing)
             
             # Reinitialize detector with new thresholds
-            if machine_id in self._detectors:
-                await self.initialize_machine_detector(machine_id)
+            remove_machine_detector(machine_id)
+            await self.initialize_machine_detector(machine_id)
             
             return existing
         else:
@@ -162,8 +172,8 @@ class MachineStateService:
             await self.db.refresh(db_thresholds)
             
             # Reinitialize detector with new thresholds
-            if machine_id in self._detectors:
-                await self.initialize_machine_detector(machine_id)
+            remove_machine_detector(machine_id)
+            await self.initialize_machine_detector(machine_id)
             
             return db_thresholds
     
