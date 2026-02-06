@@ -52,24 +52,19 @@ export const SensorMonitors: React.FC<SensorMonitorsProps> = ({ refreshInterval 
       const typeMapping: Record<string, string> = {
         // Temperature mappings
         'temperature': 'temperature',
-        'opcua_temperature': 'temperature',
         'temp': 'temperature',
         // Vibration mappings
         'vibration': 'vibration',
-        'opcua_vibration': 'vibration',
         'vib': 'vibration',
         // Pressure mappings
         'pressure': 'pressure',
-        'opcua_pressure': 'pressure',
         'press': 'pressure',
         // Motor Current mappings
         'motor_current': 'motor_current',
-        'opcua_motor_current': 'motor_current',
         'motorcurrent': 'motor_current',
         'current': 'motor_current',
         // Wear Index mappings
         'wear_index': 'wear_index',
-        'opcua_wear_index': 'wear_index',
         'wear': 'wear_index',
         'wearindex': 'wear_index',
       };
@@ -232,9 +227,9 @@ export const SensorMonitors: React.FC<SensorMonitorsProps> = ({ refreshInterval 
     return (
       <div className="bg-white/90 border border-slate-200 rounded-xl p-6 shadow-sm">
         <h2 className="text-lg font-semibold text-[#1F2937] mb-4">{t('sensorMonitors.liveTitle')}</h2>
-        <div className="text-[#4B5563] text-sm">{t('sensorMonitors.waitingForOpcua')}</div>
+        <div className="text-[#4B5563] text-sm">{t('sensorMonitors.waitingForData')}</div>
         <div className="text-[#9CA3AF] text-xs mt-2">
-          {t('sensorMonitors.opcuaHint')}
+          {t('sensorMonitors.dataHint')}
         </div>
       </div>
     );

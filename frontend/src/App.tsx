@@ -16,8 +16,6 @@ import AlarmsPage from "./pages/Alarms";
 import TicketsPage from "./pages/Tickets";
 import ReportsPage from "./pages/Reports";
 import AIServicePage from "./pages/AIService";
-import MQTTStatusPage from "./pages/MQTTStatus";
-import OPCUAWizard from "./pages/OPCUAWizard";
 import SettingsPage from "./pages/Settings";
 import NotificationsPage from "./pages/Notifications";
 import WebhooksPage from "./pages/Webhooks";
@@ -73,8 +71,6 @@ function AppRoutes() {
                 <Route path="tickets" element={<TicketsPage />} />
                 <Route path="reports" element={<ReportsPage />} />
                 <Route path="ai" element={<AIServicePage />} />
-                <Route path="mqtt" element={<MQTTStatusPage />} />
-                <Route path="opcua" element={<OPCUAWizard />} />
                 <Route path="settings" element={<SettingsPage />} />
                 <Route path="notifications" element={<NotificationsPage />} />
                 <Route path="webhooks" element={<WebhooksPage />} />

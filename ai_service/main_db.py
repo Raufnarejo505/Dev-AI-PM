@@ -355,63 +355,20 @@ async def list_models():
     }
 
 # ==================== DATABASE POLLING ====================
-async def poll_sensor_data():
-    """Poll database for new sensor data and process it"""
-    while True:
-        try:
-            async with async_session() as session:
-                # Get latest sensor data from last 5 seconds
-                five_seconds_ago = datetime.utcnow() - timedelta(seconds=5)
-                
-                # Query sensor data
-                from app.models.sensor_data import SensorData
-                result = await session.execute(
-                    select(SensorData)
-                    .where(SensorData.timestamp >= five_seconds_ago)
-                    .order_by(SensorData.timestamp.desc())
-                    .limit(100)
-                )
-                
-                sensor_data_list = result.scalars().all()
-                
-                # Group by sensor for processing
-                sensor_groups = defaultdict(list)
-                for data in sensor_data_list:
-                    sensor_groups[data.sensor_id].append(data)
-                
-                # Process each sensor's data
-                for sensor_id, data_list in sensor_groups.items():
-                    if data_list:
-                        # Get the latest reading
-                        latest = data_list[0]
-                        
-                        # Create prediction payload
-                        payload = PredictPayload(
-                            machine_id=latest.machine_id,
-                            sensor_id=sensor_id,
-                            timestamp=latest.timestamp,
-                            readings={"value": latest.value}
-                        )
-                        
-                        # Make prediction
-                        prediction = detector.predict(payload)
-                        
-                        # Store prediction in database (optional)
-                        # This would require the prediction model to be available
-                        # For now, we just log it
-                        logger.info(f"AI prediction for {sensor_id}: {prediction.status} (score: {prediction.anomaly_score:.3f})")
-                
-        except Exception as e:
-            logger.error(f"Error polling sensor data: {e}")
-        
-        # Wait before next poll
-        await asyncio.sleep(5)
+# DISABLED: Database polling removed - AI service now receives predictions via HTTP API calls from backend
+# The backend's MSSQL poller calls the AI service directly, so this polling is not needed
+# async def poll_sensor_data():
+#     """Poll database for new sensor data and process it"""
+#     # This function was causing errors because it tried to import from app.models
+#     # which doesn't exist in the AI service context. Since the backend now calls
+#     # the AI service via HTTP API, this polling is no longer needed.
+#     pass
 
 @app.on_event("startup")
 async def startup_event():
-    """Start database polling"""
+    """Startup event - AI service is ready to receive HTTP requests"""
     logger.info("Starting AI service with direct database connection")
-    asyncio.create_task(poll_sensor_data())
+    logger.info("AI service ready to receive prediction requests via HTTP API")
 
 if __name__ == "__main__":
     import uvicorn

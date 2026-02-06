@@ -17,6 +17,7 @@ from app.api.routers import (
     alarms,
     attachments,
     audit,
+    connections,
     dashboard,
     health,
     history,
@@ -25,9 +26,7 @@ from app.api.routers import (
     machine_state,
     machines,
     metrics,
-    mqtt,
     notifications,
-    opcua,
     predictions,
     realtime,
     reports,
@@ -35,7 +34,6 @@ from app.api.routers import (
     sensor_data,
     sensors,
     settings as settings_router,
-    simulator,
     system,
     tickets,
     users,
@@ -43,8 +41,6 @@ from app.api.routers import (
 )
 from app.core.config import get_settings
 from app.db.session import AsyncSessionLocal
-from app.mqtt.consumer import mqtt_ingestor
-from app.opcua.connector import opcua_connector
 from app.services.mssql_extruder_poller import mssql_extruder_poller
 from app.services import notification_service
 from app.services.incident_manager import incident_manager
@@ -105,7 +101,6 @@ async def not_found_handler(request: Request, exc):
                 "openapi": "/openapi.json",
                 "dashboard": "/dashboard/overview",
                 "ai_status": "/ai/status",
-                "mqtt_status": "/mqtt/status",
                 "machines": "/machines",
                 "sensors": "/sensors",
                 "predictions": "/predictions",
@@ -154,9 +149,8 @@ app.include_router(knowledge.router)
 app.include_router(history.router)
 app.include_router(dashboard.router)
 app.include_router(ai.router)
-app.include_router(mqtt.router)
-app.include_router(opcua.router)
 app.include_router(settings_router.router)
+app.include_router(connections.router)
 app.include_router(system.router)
 app.include_router(webhooks.router)
 app.include_router(audit.router)
@@ -164,7 +158,6 @@ app.include_router(realtime.router)
 app.include_router(attachments.router)
 app.include_router(metrics.router)
 app.include_router(jobs.router)
-app.include_router(simulator.router)
 
 # Mount static files AFTER routers so router routes take precedence
 app.mount("/reports", StaticFiles(directory=reports_dir), name="reports")
@@ -179,20 +172,18 @@ async def root():
         "status": "running",
         "message": "Backend API is running successfully",
         "timestamp": datetime.utcnow().isoformat(),
-        "endpoints": {
+            "endpoints": {
             "health": "/health",
             "status": "/status",
             "api_docs": "/docs",
             "openapi": "/openapi.json",
             "dashboard": "/dashboard/overview",
-            "ai_status": "/ai/status",
-            "mqtt_status": "/mqtt/status"
+            "ai_status": "/ai/status"
         },
         "services": {
             "backend": "Running",
             "database": "Check /health/ready",
-            "ai_service": "Check /ai/status",
-            "mqtt": "Check /mqtt/status"
+            "ai_service": "Check /ai/status"
         }
     }
 
@@ -219,21 +210,26 @@ async def startup_event():
         except Exception as e:
             logger.error(f"Clean-slate reset failed: {e}")
 
-    # DISABLED: MQTT and OPC UA - using direct database simulation instead
-    # mqtt_ingestor.start(loop)
-    # logger.info("MQTT consumer ENABLED - receiving data from OPC UA edge gateway")
-    # opcua_connector.start(loop)
-    # logger.info("Startup complete - OPC UA connector ready")
+    # ENABLED: MQTT and OPC UA for real sensor data processing
+    # NOTE:
+    # The platform was originally designed to ingest live data via MQTT and OPC UA.
+    # For the current extruder deployment, the canonical data source is MSSQL,
+    # so we rely on the MSSQL extruder poller instead and keep MQTT/OPC UA disabled
+    # to reduce operational complexity.
+    #
+    # If you ever need to re-enable MQTT/OPC UA ingestion, restore the
+    # mqtt_ingestor/opcua_connector imports above and the start/stop calls here.
+    logger.info("MQTT and OPC UA ingestion DISABLED - using MSSQL extruder poller as primary data source")
     
-    # ENABLED: Direct sensor data simulation for machine state detection
-    from app.tasks.sensor_data_simulator import start_sensor_data_simulation
-    loop.create_task(start_sensor_data_simulation(interval_seconds=2))
-    logger.info("Direct sensor data simulation ENABLED - generating realistic machine state transitions")
+    # DISABLED: Direct sensor data simulation - using real sensor data instead
+    # from app.tasks.sensor_data_simulator import start_sensor_data_simulation
+    # loop.create_task(start_sensor_data_simulation(interval_seconds=2))
+    # logger.info("Direct sensor data simulation DISABLED - using real sensor data")
     
     # Optional: MSSQL read-only extruder poller (no OPC UA). Opt-in via env vars.
     mssql_extruder_poller.start(loop)
     await asyncio.sleep(1)
-    logger.info("Startup complete - direct simulation ready")
+    logger.info("Startup complete - real sensor data processing ready")
 
     # ENABLED: Demo machines for testing machine state detection
     try:
@@ -258,9 +254,7 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    # DISABLED: MQTT and OPC UA shutdown
-    # mqtt_ingestor.stop()
-    # await opcua_connector.stop()
+    # MSSQL poller shutdown
     await mssql_extruder_poller.stop()
-    logger.info("Backend shutdown complete")
+    logger.info("Backend shutdown complete - MSSQL-based real sensor data processing stopped")
 

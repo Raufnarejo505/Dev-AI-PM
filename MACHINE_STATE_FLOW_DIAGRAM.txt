@@ -1,0 +1,219 @@
+╔═══════════════════════════════════════════════════════════════════════════════╗
+║                    MACHINE STATE DETECTION - DATA FLOW                        ║
+╚═══════════════════════════════════════════════════════════════════════════════╝
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ STEP 1: DATA INGESTION                                                       │
+│                                                                               │
+│  MSSQL Database (Tab_Actual)                                                  │
+│  ├─ TrendDate (timestamp)                                                    │
+│  ├─ Val_4 → ScrewSpeed_rpm                                                  │
+│  ├─ Val_6 → Pressure_bar                                                     │
+│  ├─ Val_7 → Temperaturzonen Zone 1                                          │
+│  ├─ Val_8 → Temperaturzonen Zone 2                                          │
+│  ├─ Val_9 → Temperaturzonen Zone 3                                          │
+│  └─ Val_10 → Temperaturzonen Zone 4                                         │
+│                                                                               │
+│  MSSQLExtruderPoller._run()                                                  │
+│  • Polls MSSQL every N seconds                                               │
+│  • Maintains sliding window (last 10 minutes)                                │
+│  • Computes window features (mean, std, min, max)                            │
+└───────────────────────┬───────────────────────────────────────────────────────┘
+                        │
+                        │ Raw sensor data + window features
+                        │
+                        ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ STEP 2: AI PREDICTION                                                        │
+│                                                                               │
+│  AI Service HTTP API                                                          │
+│  POST /predict                                                                │
+│  Input: {machine_id, sensor_id, readings, window_features}                  │
+│  Output: {prediction, status, score, confidence, RUL, anomaly_type}         │
+└───────────────────────┬───────────────────────────────────────────────────────┘
+                        │
+                        │ AI Result
+                        │
+                        ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ STEP 3: BUILD SENSOR READING                                                 │
+│                                                                               │
+│  MSSQLExtruderPoller._persist_prediction()                                  │
+│                                                                               │
+│  SensorReading {                                                              │
+│    timestamp: datetime                                                        │
+│    screw_rpm: float          ← from readings["rpm"]                         │
+│    pressure_bar: float       ← from readings["pressure"]                    │
+│    temp_zone_1: float         ← from readings["temp_zone1"]                 │
+│    temp_zone_2: float         ← from readings["temp_zone2"]                 │
+│    temp_zone_3: float         ← from readings["temp_zone3"]                 │
+│    temp_zone_4: float         ← from readings["temp_zone4"]                  │
+│  }                                                                            │
+└───────────────────────┬───────────────────────────────────────────────────────┘
+                        │
+                        │ SensorReading object
+                        │
+                        ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ STEP 4: STATE DETECTION                                                      │
+│                                                                               │
+│  MachineStateService.process_sensor_reading()                               │
+│  └─→ MachineStateDetector.add_reading(reading)                              │
+│                                                                               │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │ 4.1: Add to Buffers                                                  │   │
+│  │   • reading_buffer (last 120 readings)                              │   │
+│  │   • temp_history (last 300 readings)                                │   │
+│  └───────────────────────┬─────────────────────────────────────────────┘   │
+│                          │                                                    │
+│                          ▼                                                    │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │ 4.2: Calculate Derived Metrics                                      │   │
+│  │   • temp_avg = mean(temp_zone_1..4)                                  │   │
+│  │   • temp_spread = max - min                                         │   │
+│  │   • d_temp_avg = temp slope (°C/min) from 5-6 min history          │   │
+│  │   • rpm_stable = std dev of RPM (last 60s)                           │   │
+│  │   • pressure_stable = std dev of pressure (last 60s)                │   │
+│  └───────────────────────┬─────────────────────────────────────────────┘   │
+│                          │                                                    │
+│                          ▼                                                    │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │ 4.3: Detect Sensor Faults                                            │   │
+│  │   • Temp ≤ 0 or > 400°C?                                            │   │
+│  │   • Pressure = 0 while RPM > threshold?                             │   │
+│  │   • Missing critical data?                                           │   │
+│  │   → If fault: return SENSOR_FAULT                                   │   │
+│  └───────────────────────┬─────────────────────────────────────────────┘   │
+│                          │                                                    │
+│                          ▼                                                    │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │ 4.4: Determine State (_determine_state)                             │   │
+│  │                                                                       │   │
+│  │   Priority Order:                                                    │   │
+│  │   1. OFF:      rpm < 5 AND pressure < 2 AND temp < 60°C              │   │
+│  │   2. COOLING:  rpm < 5 AND temp falling AND temp ≥ 60°C             │   │
+│  │   3. HEATING:  rpm < 10 AND temp rising AND temp ≥ 60°C              │   │
+│  │   4. PRODUCTION: rpm ≥ 10 AND pressure ≥ 5 (primary)                 │   │
+│  │   5. PRODUCTION: rpm ≥ 10 AND (pressure ≥ 2 OR motor_load OR         │   │
+│  │                  throughput) (fallback)                               │   │
+│  │   6. IDLE:      warm, stable temp, no RPM/pressure                    │   │
+│  │   7. Default:  IDLE if warm, else OFF                                │   │
+│  └───────────────────────┬─────────────────────────────────────────────┘   │
+│                          │                                                    │
+│                          ▼                                                    │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │ 4.5: Apply Hysteresis (_apply_hysteresis)                           │   │
+│  │   • Enter PRODUCTION: requires 90s sustained criteria               │   │
+│  │   • Exit PRODUCTION: requires 120s sustained non-production        │   │
+│  │   • Other transitions: 60s debounce                                 │   │
+│  └───────────────────────┬─────────────────────────────────────────────┘   │
+│                          │                                                    │
+│                          ▼                                                    │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │ 4.6: Update Current State                                            │   │
+│  │   • If state changed: update state_since timestamp                   │   │
+│  │   • Update confidence, metrics, duration                            │   │
+│  └───────────────────────┬─────────────────────────────────────────────┘   │
+│                          │                                                    │
+└──────────────────────────┼────────────────────────────────────────────────────┘
+                           │
+                           │ MachineStateInfo
+                           │
+                           ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ STEP 5: PERSISTENCE & ACTIONS                                                │
+│                                                                               │
+│  MachineStateService (continued)                                             │
+│                                                                               │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │ 5.1: Log State Transition (if changed)                             │   │
+│  │   → MachineStateTransition table                                    │   │
+│  └───────────────────────┬─────────────────────────────────────────────┘   │
+│                          │                                                    │
+│                          ▼                                                    │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │ 5.2: Store Current State                                            │   │
+│  │   → MachineState table                                              │   │
+│  └───────────────────────┬─────────────────────────────────────────────┘   │
+│                          │                                                    │
+│                          ▼                                                    │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │ 5.3: Handle State Actions                                            │   │
+│  │   • SENSOR_FAULT → critical alert                                   │   │
+│  │   • PRODUCTION_START → info alert                                   │   │
+│  │   • PRODUCTION_END → info alert                                     │   │
+│  │   → MachineStateAlert table                                         │   │
+│  └───────────────────────┬─────────────────────────────────────────────┘   │
+│                          │                                                    │
+└──────────────────────────┼────────────────────────────────────────────────────┘
+                           │
+                           │
+                           ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ STEP 6: DATABASE STORAGE                                                     │
+│                                                                               │
+│  TimescaleDB                                                                  │
+│  ├─ machine_state (current state)                                           │
+│  ├─ machine_state_transition (history)                                      │
+│  ├─ machine_state_alert (alerts)                                            │
+│  └─ prediction (AI predictions)                                            │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+╔═══════════════════════════════════════════════════════════════════════════════╗
+║                         STATE TRANSITION DIAGRAM                               ║
+╚═══════════════════════════════════════════════════════════════════════════════╝
+
+        ┌─────┐
+        │ OFF │ ◄──────────────────────────────────────────────┐
+        └──┬──┘                                                 │
+           │                                                    │
+           │ temp ≥ 60°C AND dT > 0.2°C/min                    │
+           ▼                                                    │
+     ┌──────────┐                                              │
+     │ HEATING  │                                              │
+     └────┬─────┘                                              │
+          │                                                     │
+          ├─→ (rpm ≥ 10 AND pressure ≥ 5) for 90s ────────────┤
+          │   ┌─────────────┐                                 │
+          │   │ PRODUCTION   │ ◄───────────────────────────────┤
+          │   └──────┬───────┘                                 │
+          │          │                                           │
+          │          │ (criteria unmet for 120s)                 │
+          │          │                                           │
+          └─→ (warm, flat temp, no RPM/pressure)                 │
+              ┌──────┐                                          │
+              │ IDLE │                                          │
+              └──┬───┘                                          │
+                 │                                               │
+                 ├─→ (rpm ≥ 10 AND pressure ≥ 5) for 90s ───────┘
+                 │
+                 └─→ (temp falling, dT ≤ -0.2°C/min)
+                     ┌─────────┐
+                     │ COOLING │
+                     └────┬────┘
+                          │
+                          │ (temp < 60°C)
+                          ▼
+                        ┌─────┐
+                        │ OFF │
+                        └─────┘
+
+╔═══════════════════════════════════════════════════════════════════════════════╗
+║                         KEY THRESHOLDS (Default)                               ║
+╚═══════════════════════════════════════════════════════════════════════════════╝
+
+┌─────────────────────┬──────────┬──────────────────────────────────────────┐
+│ Threshold           │ Default  │ Description                               │
+├─────────────────────┼──────────┼──────────────────────────────────────────┤
+│ RPM_ON              │ 5.0 rpm  │ Minimum RPM to consider machine "on"     │
+│ RPM_PROD            │ 10.0 rpm │ Minimum RPM for production               │
+│ P_ON                │ 2.0 bar │ Minimum pressure to consider "on"       │
+│ P_PROD              │ 5.0 bar │ Minimum pressure for production           │
+│ T_MIN_ACTIVE        │ 60.0 °C  │ Minimum temp for active states           │
+│ HEATING_RATE        │ 0.2 °C/min │ Positive temp slope for heating      │
+│ COOLING_RATE        │ -0.2 °C/min │ Negative temp slope for cooling     │
+│ TEMP_FLAT_RATE      │ 0.2 °C/min │ Temp change considered "flat"         │
+│ PRODUCTION_ENTER    │ 90 sec   │ Time to enter PRODUCTION                │
+│ PRODUCTION_EXIT     │ 120 sec  │ Time to exit PRODUCTION                  │
+│ STATE_CHANGE_DEBOUNCE│ 60 sec  │ Debounce for other transitions           │
+└─────────────────────┴──────────┴──────────────────────────────────────────┘

@@ -13,7 +13,6 @@ type IconName =
     | "tickets"
     | "reports"
     | "ai"
-    | "opcua"
     | "settings"
     | "notifications"
     | "webhooks"
@@ -135,15 +134,6 @@ function NavIcon({ name, active }: { name: IconName; active: boolean }) {
                     <path d="M15 10h.01" />
                 </Svg>
             );
-        case "opcua":
-            return (
-                <Svg>
-                    <rect x="6" y="4" width="12" height="16" rx="2" />
-                    <path d="M9 8h6" />
-                    <path d="M9 12h6" />
-                    <path d="M9 16h4" />
-                </Svg>
-            );
         case "settings":
             return (
                 <Svg>
@@ -256,7 +246,6 @@ export default function Sidebar({ isOpen = false, onClose, isCollapsed = false, 
                 title: t("nav.aiIntegration"),
                 items: [
                     { path: "/ai", label: t("nav.aiService"), icon: "ai", requireRole: ["engineer", "admin"] },
-                    { path: "/opcua", label: t("nav.opcuaWizard"), icon: "opcua", requireRole: ["engineer", "admin"] },
                 ],
             },
             {

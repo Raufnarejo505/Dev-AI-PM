@@ -174,20 +174,6 @@ export interface AIStatus {
     };
 }
 
-// MQTT Types
-export interface MQTTStatus {
-    connected: boolean;
-    broker?: {
-        host: string;
-        port: number;
-    };
-    consumer?: {
-        connected: boolean;
-        topics?: string[];
-        queue_size?: number;
-    };
-}
-
 // Settings Types
 export interface SettingBase {
     key: string;

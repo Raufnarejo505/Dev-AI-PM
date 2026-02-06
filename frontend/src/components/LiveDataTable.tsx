@@ -57,13 +57,8 @@ export const LiveDataTable: React.FC = () => {
                             sensor.metadata?.alias?.toLowerCase() ||
                             sensorName.toLowerCase().replace(/\s+/g, '_');
           
-          // Map common OPC UA aliases to standard types
+          // Map sensor types to standard types
           const typeMap: Record<string, string> = {
-            'opcua_temperature': 'temperature',
-            'opcua_vibration': 'vibration',
-            'opcua_motor_current': 'motor_current',
-            'opcua_pressure': 'pressure',
-            'opcua_wear_index': 'wear',
             'temperature': 'temperature',
             'vibration': 'vibration',
             'pressure': 'pressure',
@@ -122,8 +117,8 @@ export const LiveDataTable: React.FC = () => {
     };
 
     fetchLiveData();
-    // Update every 2 seconds to match OPC UA polling frequency (typically 1-2 seconds)
-    const interval = setInterval(fetchLiveData, 2000);
+        // Update every 2 seconds
+        const interval = setInterval(fetchLiveData, 2000);
     return () => clearInterval(interval);
   }, []);
 

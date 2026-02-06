@@ -55,202 +55,109 @@ async def seed_demo_users():
 
 
 async def seed_sample_machines():
-    """Create sample machines and sensors matching simulator configuration"""
+    """Create only the extruder machine with specified sensors"""
+    import os
+    from sqlalchemy import select, delete
+    from app.models.sensor import Sensor
+    
     async with AsyncSessionLocal() as session:
-        from sqlalchemy import select
+        # Get the extruder machine name from environment or use default
+        extruder_machine_name = os.getenv("MSSQL_MACHINE_NAME", "Extruder-SQL")
         
-        # Machine 1: Pump-01
-        pump_result = await session.execute(
-            select(Machine).where(Machine.name == "Pump-01")
+        # Delete all machines except the extruder machine
+        all_machines_result = await session.execute(select(Machine))
+        all_machines = all_machines_result.scalars().all()
+        
+        machines_to_delete = [m for m in all_machines if m.name != extruder_machine_name]
+        if machines_to_delete:
+            for machine in machines_to_delete:
+                # Delete all sensors for this machine first
+                await session.execute(
+                    delete(Sensor).where(Sensor.machine_id == machine.id)
+                )
+                await session.delete(machine)
+            await session.commit()
+            print(f"✓ Deleted {len(machines_to_delete)} non-extruder machine(s)")
+        
+        # Check if extruder machine exists
+        extruder_result = await session.execute(
+            select(Machine).where(Machine.name == extruder_machine_name)
         )
-        pump = pump_result.scalar_one_or_none()
+        extruder = extruder_result.scalar_one_or_none()
         
-        if not pump:
-            pump_id = uuid4()
-            pump = await machine_service.create_machine(
+        if not extruder:
+            # Create the extruder machine
+            extruder = await machine_service.create_machine(
                 session,
                 MachineCreate(
-                    id=pump_id,
-                    name="Pump-01",
-                    location="Building A, Floor 2",
+                    name=extruder_machine_name,
+                    location="Production Line",
                     status="online",
                     criticality="high",
-                    metadata={"type": "centrifugal_pump", "machine_id": "machine-1"},
+                    metadata={
+                        "type": "extruder",
+                        "machine_type": "extruder",
+                        "source": "mssql",
+                    },
                 )
             )
             await session.commit()
-            await session.refresh(pump)
-            print(f"✓ Created machine: {pump.name}")
-            
-            # Create sensors matching simulator
-            sensors_pump = [
-                {"name": "Pressure Sensor", "sensor_id": "pressure-head", "type": "pressure", "unit": "psi", "min": 100, "max": 180, "warn": 150, "crit": 180},
-                {"name": "Temperature Sensor", "sensor_id": "temp-core", "type": "temperature", "unit": "°C", "min": 200, "max": 260, "warn": 250, "crit": 280},
-                {"name": "Vibration Sensor", "sensor_id": "vibe-x", "type": "vibration", "unit": "mm/s", "min": 2, "max": 5, "warn": 4, "crit": 6},
-                {"name": "Flow Sensor", "sensor_id": "flow-rate", "type": "flow", "unit": "L/min", "min": 50, "max": 150, "warn": 130, "crit": 145},
-            ]
-            for sensor_data in sensors_pump:
-                await sensor_service.create_sensor(
-                    session,
-                    SensorCreate(
-                        id=uuid4(),
-                        name=sensor_data["name"],
-                        machine_id=pump.id,
-                        sensor_type=sensor_data["type"],
-                        unit=sensor_data["unit"],
-                        min_threshold=sensor_data["min"],
-                        max_threshold=sensor_data["max"],
-                        warning_threshold=sensor_data["warn"],
-                        critical_threshold=sensor_data["crit"],
-                        metadata={"sensor_id": sensor_data["sensor_id"]},
-                    )
-                )
-            await session.commit()
-            print(f"  ✓ Created {len(sensors_pump)} sensors for {pump.name}")
+            await session.refresh(extruder)
+            print(f"✓ Created machine: {extruder.name}")
+        else:
+            print(f"✓ Machine already exists: {extruder.name}")
         
-        # Machine 2: Motor-02
-        motor_result = await session.execute(
-            select(Machine).where(Machine.name == "Motor-02")
+        # Define the required sensors
+        required_sensors = [
+            {"name": "ScrewSpeed_rpm", "type": "rpm", "unit": "rpm", "min": 0, "max": 500, "warn": 400, "crit": 450},
+            {"name": "Pressure_bar", "type": "pressure", "unit": "bar", "min": 0, "max": 200, "warn": 150, "crit": 180},
+            {"name": "Temperaturzonen Zone 1", "type": "temperature", "unit": "°C", "min": 0, "max": 300, "warn": 250, "crit": 280},
+            {"name": "Temperaturzonen Zone 2", "type": "temperature", "unit": "°C", "min": 0, "max": 300, "warn": 250, "crit": 280},
+            {"name": "Temperaturzonen Zone 3", "type": "temperature", "unit": "°C", "min": 0, "max": 300, "warn": 250, "crit": 280},
+            {"name": "Temperaturzonen Zone 4", "type": "temperature", "unit": "°C", "min": 0, "max": 300, "warn": 250, "crit": 280},
+        ]
+        
+        # Get existing sensors for the extruder
+        existing_sensors_result = await session.execute(
+            select(Sensor).where(Sensor.machine_id == extruder.id)
         )
-        motor = motor_result.scalar_one_or_none()
+        existing_sensors = existing_sensors_result.scalars().all()
+        existing_sensor_names = {s.name for s in existing_sensors}
         
-        if not motor:
-            motor_id = uuid4()
-            motor = await machine_service.create_machine(
-                session,
-                MachineCreate(
-                    id=motor_id,
-                    name="Motor-02",
-                    location="Building B, Floor 1",
-                    status="online",
-                    criticality="medium",
-                    metadata={"type": "electric_motor", "machine_id": "machine-2"},
-                )
-            )
+        # Delete sensors that are not in the required list
+        sensors_to_delete = [s for s in existing_sensors if s.name not in {rs["name"] for rs in required_sensors}]
+        if sensors_to_delete:
+            for sensor in sensors_to_delete:
+                await session.delete(sensor)
             await session.commit()
-            await session.refresh(motor)
-            print(f"✓ Created machine: {motor.name}")
-            
-            sensors_motor = [
-                {"name": "Current Sensor", "sensor_id": "current-phase-a", "type": "current", "unit": "A", "min": 10, "max": 50, "warn": 18, "crit": 22},
-                {"name": "Temperature Sensor", "sensor_id": "temp-winding", "type": "temperature", "unit": "°C", "min": 60, "max": 120, "warn": 100, "crit": 110},
-                {"name": "Vibration Sensor", "sensor_id": "vibration-base", "type": "vibration", "unit": "mm/s", "min": 1, "max": 4, "warn": 3.5, "crit": 4.5},
-                {"name": "RPM Sensor", "sensor_id": "rpm-shaft", "type": "rpm", "unit": "rpm", "min": 1400, "max": 1600, "warn": 1550, "crit": 1580},
-            ]
-            for sensor_data in sensors_motor:
+            print(f"  ✓ Deleted {len(sensors_to_delete)} unwanted sensor(s)")
+        
+        # Create missing sensors
+        sensors_created = 0
+        for sensor_data in required_sensors:
+            if sensor_data["name"] not in existing_sensor_names:
                 await sensor_service.create_sensor(
                     session,
                     SensorCreate(
-                        id=uuid4(),
                         name=sensor_data["name"],
-                        machine_id=motor.id,
+                        machine_id=extruder.id,
                         sensor_type=sensor_data["type"],
                         unit=sensor_data["unit"],
                         min_threshold=sensor_data["min"],
                         max_threshold=sensor_data["max"],
                         warning_threshold=sensor_data["warn"],
                         critical_threshold=sensor_data["crit"],
-                        metadata={"sensor_id": sensor_data["sensor_id"]},
+                        metadata={"source": "seed"},
                     )
                 )
-            await session.commit()
-            print(f"  ✓ Created {len(sensors_motor)} sensors for {motor.name}")
+                sensors_created += 1
         
-        # Machine 3: Compressor-A
-        compressor_result = await session.execute(
-            select(Machine).where(Machine.name == "Compressor-A")
-        )
-        compressor = compressor_result.scalar_one_or_none()
+        if sensors_created > 0:
+            await session.commit()
+            print(f"  ✓ Created {sensors_created} sensor(s) for {extruder.name}")
         
-        if not compressor:
-            compressor_id = uuid4()
-            compressor = await machine_service.create_machine(
-                session,
-                MachineCreate(
-                    id=compressor_id,
-                    name="Compressor-A",
-                    location="Building C, Floor 3",
-                    status="online",
-                    criticality="high",
-                    metadata={"type": "air_compressor", "machine_id": "machine-3"},
-                )
-            )
-            await session.commit()
-            await session.refresh(compressor)
-            print(f"✓ Created machine: {compressor.name}")
-            
-            sensors_compressor = [
-                {"name": "Pressure Sensor", "sensor_id": "pressure-tank", "type": "pressure", "unit": "bar", "min": 6, "max": 10, "warn": 9, "crit": 9.5},
-                {"name": "Temperature Sensor", "sensor_id": "temp-discharge", "type": "temperature", "unit": "°C", "min": 40, "max": 90, "warn": 75, "crit": 85},
-                {"name": "Oil Level Sensor", "sensor_id": "oil-level", "type": "oil_level", "unit": "%", "min": 40, "max": 100, "warn": 50, "crit": 45},
-                {"name": "Vibration Sensor", "sensor_id": "vibration-1", "type": "vibration", "unit": "mm/s", "min": 1.5, "max": 4.5, "warn": 3.5, "crit": 4.5},
-            ]
-            for sensor_data in sensors_compressor:
-                await sensor_service.create_sensor(
-                    session,
-                    SensorCreate(
-                        id=uuid4(),
-                        name=sensor_data["name"],
-                        machine_id=compressor.id,
-                        sensor_type=sensor_data["type"],
-                        unit=sensor_data["unit"],
-                        min_threshold=sensor_data["min"],
-                        max_threshold=sensor_data["max"],
-                        warning_threshold=sensor_data["warn"],
-                        critical_threshold=sensor_data["crit"],
-                        metadata={"sensor_id": sensor_data["sensor_id"]},
-                    )
-                )
-            await session.commit()
-            print(f"  ✓ Created {len(sensors_compressor)} sensors for {compressor.name}")
-        
-        # Machine 4: Conveyor-B2
-        conveyor_result = await session.execute(
-            select(Machine).where(Machine.name == "Conveyor-B2")
-        )
-        conveyor = conveyor_result.scalar_one_or_none()
-        
-        if not conveyor:
-            conveyor_id = uuid4()
-            conveyor = await machine_service.create_machine(
-                session,
-                MachineCreate(
-                    id=conveyor_id,
-                    name="Conveyor-B2",
-                    location="Building B, Floor 2",
-                    status="online",
-                    criticality="medium",
-                    metadata={"type": "conveyor_belt", "machine_id": "machine-4"},
-                )
-            )
-            await session.commit()
-            await session.refresh(conveyor)
-            print(f"✓ Created machine: {conveyor.name}")
-            
-            sensors_conveyor = [
-                {"name": "Speed Sensor", "sensor_id": "speed-belt", "type": "speed", "unit": "m/s", "min": 0.5, "max": 2.5, "warn": 2.2, "crit": 2.4},
-                {"name": "Load Sensor", "sensor_id": "load-weight", "type": "load", "unit": "kg", "min": 0, "max": 500, "warn": 450, "crit": 480},
-                {"name": "Temperature Sensor", "sensor_id": "temp-bearing", "type": "temperature", "unit": "°C", "min": 25, "max": 70, "warn": 60, "crit": 65},
-                {"name": "Torque Sensor", "sensor_id": "torque-motor", "type": "torque", "unit": "Nm", "min": 50, "max": 200, "warn": 180, "crit": 190},
-            ]
-            for sensor_data in sensors_conveyor:
-                await sensor_service.create_sensor(
-                    session,
-                    SensorCreate(
-                        id=uuid4(),
-                        name=sensor_data["name"],
-                        machine_id=conveyor.id,
-                        sensor_type=sensor_data["type"],
-                        unit=sensor_data["unit"],
-                        min_threshold=sensor_data["min"],
-                        max_threshold=sensor_data["max"],
-                        warning_threshold=sensor_data["warn"],
-                        critical_threshold=sensor_data["crit"],
-                        metadata={"sensor_id": sensor_data["sensor_id"]},
-                    )
-                )
-            await session.commit()
-            print(f"  ✓ Created {len(sensors_conveyor)} sensors for {conveyor.name}")
+        total_sensors = len([s for s in existing_sensors if s.name in {rs["name"] for rs in required_sensors}]) + sensors_created
+        print(f"  ✓ Total sensors for {extruder.name}: {total_sensors}")
 
 
 async def main():

@@ -1,6 +1,6 @@
 from functools import lru_cache
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import Optional
 import os
 
 from pydantic import field_validator
@@ -18,32 +18,6 @@ class Settings(BaseSettings):
     postgres_db: str = "pm_db"
     postgres_host: str = "postgres"
     postgres_port: int = 5432
-
-    # MQTT
-    mqtt_broker_host: str = "mqtt"
-    mqtt_broker_port: int = 1883
-    mqtt_topics: Union[List[str], str] = ["factory/#", "edge/#", "sensors/+/telemetry"]
-    
-    @field_validator("mqtt_topics", mode="before")
-    @classmethod
-    def parse_mqtt_topics(cls, v):
-        """Parse MQTT topics from environment variable (comma-separated string) or list"""
-        # Check environment variable first
-        env_topics = os.getenv("MQTT_TOPICS")
-        if env_topics:
-            # Environment variable takes precedence
-            return [topic.strip() for topic in env_topics.split(",") if topic.strip()]
-        
-        if isinstance(v, str):
-            # Split by comma and strip whitespace
-            return [topic.strip() for topic in v.split(",") if topic.strip()]
-        return v
-
-    # OPC UA (defaults are safe placeholders; real endpoints are configured via UI)
-    opcua_default_endpoint_url: str = "opc.tcp://localhost:4840"
-    opcua_default_namespace_index: int = 2
-    opcua_default_sampling_interval_ms: int = 1000
-    opcua_default_session_timeout_ms: int = 60000
 
     # AI service
     ai_service_url: str = "http://ai-service:8000"
@@ -77,7 +51,6 @@ class Settings(BaseSettings):
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    # Clear cache if MQTT_TOPICS env var changed
     settings = Settings()
     return settings
 

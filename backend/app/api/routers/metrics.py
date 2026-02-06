@@ -45,10 +45,6 @@ async def get_metrics(
         select(func.count(Alarm.id)).where(Alarm.status == "active")
     )
     
-    # Queue depth (MQTT queue size - would need to expose from mqtt_ingestor)
-    from app.mqtt.consumer import mqtt_ingestor
-    queue_depth = mqtt_ingestor.queue.qsize() if mqtt_ingestor.queue else 0
-    
     # Format as Prometheus metrics
     metrics_text = f"""# HELP sensor_data_ingestion_rate Sensor data ingestion rate per hour
 # TYPE sensor_data_ingestion_rate gauge
@@ -61,10 +57,6 @@ prediction_latency_ms {prediction_latency_ms}
 # HELP active_alarms_count Number of active alarms
 # TYPE active_alarms_count gauge
 active_alarms_count {active_alarms_count or 0}
-
-# HELP mqtt_queue_depth MQTT message queue depth
-# TYPE mqtt_queue_depth gauge
-mqtt_queue_depth {queue_depth}
 
 # HELP system_uptime_seconds System uptime in seconds
 # TYPE system_uptime_seconds counter
@@ -100,14 +92,10 @@ async def get_metrics_json(
         select(func.count(Alarm.id)).where(Alarm.status == "active")
     )
     
-    from app.mqtt.consumer import mqtt_ingestor
-    queue_depth = mqtt_ingestor.queue.qsize() if mqtt_ingestor.queue else 0
-    
     return {
         "ingestion_rate_per_hour": sensor_data_count or 0,
         "prediction_latency_ms": float(avg_latency) if avg_latency else 0.0,
         "active_alarms": active_alarms_count or 0,
-        "mqtt_queue_depth": queue_depth,
         "timestamp": now.isoformat(),
     }
 

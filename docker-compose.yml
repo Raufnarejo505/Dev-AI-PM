@@ -13,16 +13,6 @@ services:
     networks:
       - pm-net
 
-  mqtt:
-    image: eclipse-mosquitto:2
-    restart: unless-stopped
-    volumes:
-      - ./mqtt:/mosquitto/config:Z
-    ports:
-      - "1883:1883"
-    networks:
-      - pm-net
-
   ai-service:
     build:
       context: ./ai_service
@@ -47,8 +37,6 @@ services:
         condition: service_started
       ai-service:
         condition: service_started
-      mqtt:
-        condition: service_started
     environment:
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
@@ -62,9 +50,6 @@ services:
       MSSQL_DATABASE: ${MSSQL_DATABASE:-HISTORISCH}
       MSSQL_TABLE: ${MSSQL_TABLE:-Tab_Actual}
       AI_SERVICE_URL: http://ai-service:8000
-      MQTT_BROKER_HOST: mqtt
-      MQTT_BROKER_PORT: 1883
-      MQTT_TOPICS: "factory/+/telemetry,edge/#,sensors/+/telemetry"
       JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
       JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
       JWT_EXP_MINUTES: ${JWT_EXP_MINUTES:-60}
@@ -99,53 +84,42 @@ services:
     networks:
       - pm-net
 
-  # DISABLED: MQTT Simulator - removed to focus on OPC UA only
-  # simulator:
+  # DISABLED: MQTT and Simulator services removed - using MSSQL as primary data source
+  # DISABLED: OPC UA → MQTT Gateway Service - not needed
+  # edge-gateway:
   #   build:
-  #     context: ./simulator
+  #     context: ./edge_gateway
+  #   restart: unless-stopped
   #   depends_on:
   #     - mqtt
   #   environment:
-  #     MQTT_BROKER_HOST: mqtt
-  #     MQTT_BROKER_PORT: 1883
+  #     OPCUA_ENDPOINT: opc.tcp://host.docker.internal:53530/OPCUA/SimulationServer
+  #     MQTT_BROKER: mqtt
+  #     MQTT_PORT: 1883
+  #     MACHINE_ID: ${MACHINE_ID:-extruder-01}
+  #     SAMPLING_INTERVAL_MS: ${SAMPLING_INTERVAL_MS:-1000}
+  #     OPCUA_NAMESPACE_INDEX: ${OPCUA_NAMESPACE_INDEX:-3}
   #   networks:
   #     - pm-net
+  #   # Note: host.docker.internal allows access to OPC UA server on host machine
+  #   # For Linux, add this line:
+  #   extra_hosts:
+  #     - "host.docker.internal:host-gateway"
 
-  # OPC UA → MQTT Gateway Service
-  edge-gateway:
-    build:
-      context: ./edge_gateway
-    restart: unless-stopped
-    depends_on:
-      - mqtt
-    environment:
-      OPCUA_ENDPOINT: opc.tcp://host.docker.internal:53530/OPCUA/SimulationServer
-      MQTT_BROKER: mqtt
-      MQTT_PORT: 1883
-      MACHINE_ID: ${MACHINE_ID:-extruder-01}
-      SAMPLING_INTERVAL_MS: ${SAMPLING_INTERVAL_MS:-1000}
-      OPCUA_NAMESPACE_INDEX: ${OPCUA_NAMESPACE_INDEX:-3}
-    networks:
-      - pm-net
-    # Note: host.docker.internal allows access to OPC UA server on host machine
-    # For Linux, add this line:
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-
-  # Edge / AI Application
-  edge-ai:
-    build:
-      context: ./edge_ai
-    restart: unless-stopped
-    depends_on:
-      - mqtt
-      - edge-gateway
-    environment:
-      MQTT_BROKER: mqtt
-      MQTT_PORT: 1883
-      MQTT_TOPIC_PATTERN: factory/+/telemetry
-    networks:
-      - pm-net
+  # DISABLED: Edge / AI Application - using direct AI service instead
+  # edge-ai:
+  #   build:
+  #     context: ./edge_ai
+  #   restart: unless-stopped
+  #   depends_on:
+  #     - mqtt
+  #     - edge-gateway
+  #   environment:
+  #     MQTT_BROKER: mqtt
+  #     MQTT_PORT: 1883
+  #     MQTT_TOPIC_PATTERN: factory/+/telemetry
+  #   networks:
+  #     - pm-net
 
 networks:
   pm-net:

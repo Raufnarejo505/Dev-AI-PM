@@ -6,7 +6,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_session
 from app.core.config import get_settings
-from app.mqtt.consumer import mqtt_ingestor
 
 router = APIRouter(tags=["health"])
 settings = get_settings()
@@ -74,11 +73,6 @@ async def system_status(session: AsyncSession = Depends(get_session)):
             "status": "unknown",
             "message": "Checking..."
         },
-        "mqtt": {
-            "status": "unknown",
-            "message": "Checking...",
-            "connected": mqtt_ingestor.is_connected() if hasattr(mqtt_ingestor, 'is_connected') else False
-        },
         "ai_service": {
             "status": "unknown",
             "message": "Checking...",
@@ -100,24 +94,6 @@ async def system_status(session: AsyncSession = Depends(get_session)):
     except Exception as e:
         status["database"]["status"] = "disconnected"
         status["database"]["message"] = f"❌ Database connection failed: {str(e)}"
-    
-    # Check MQTT
-    try:
-        if hasattr(mqtt_ingestor, 'is_connected'):
-            is_connected = mqtt_ingestor.is_connected()
-            status["mqtt"]["connected"] = is_connected
-            if is_connected:
-                status["mqtt"]["status"] = "connected"
-                status["mqtt"]["message"] = "✅ MQTT broker connected"
-            else:
-                status["mqtt"]["status"] = "disconnected"
-                status["mqtt"]["message"] = "⚠️ MQTT broker not connected"
-        else:
-            status["mqtt"]["status"] = "unknown"
-            status["mqtt"]["message"] = "⚠️ MQTT status unavailable"
-    except Exception as e:
-        status["mqtt"]["status"] = "error"
-        status["mqtt"]["message"] = f"❌ MQTT check failed: {str(e)}"
     
     # Check AI Service
     try:

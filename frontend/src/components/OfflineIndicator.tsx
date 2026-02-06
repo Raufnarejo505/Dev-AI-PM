@@ -10,7 +10,6 @@ export function OfflineIndicator() {
     const [status, setStatus] = useState<ServiceStatus>({
         backend: true,
         ai: true,
-        mqtt: true,
         lastCheck: 0,
     });
     const [isChecking, setIsChecking] = useState(false);

@@ -16,6 +16,10 @@ from app.schemas.prediction import PredictionCreate, PredictionRequest
 from app.schemas.sensor import SensorCreate
 from app.services import machine_service, prediction_service, sensor_service
 from app.services import settings_service
+from app.services.machine_state_manager import MachineStateService
+from app.services.machine_state_service import SensorReading
+from app.services.extruder_ai_service import extruder_ai_service
+from app.models.machine import Machine
 
 
 @dataclass
@@ -225,6 +229,8 @@ class MSSQLExtruderPoller:
                         criticality="high",
                         metadata={
                             "source": "mssql",
+                            "machine_type": "extruder",
+                            "type": "extruder",
                             "mssql_database": self.database,
                             "mssql_table": self.table,
                         },
@@ -250,6 +256,21 @@ class MSSQLExtruderPoller:
 
             self._machine_id = machine.id
             self._sensor_id = sensor.id
+
+            # Ensure the machine is marked as an extruder for downstream logic that
+            # checks metadata fields like machine_type/type.
+            md = machine.metadata_json or {}
+            updated = False
+            if (md.get("machine_type") or "").lower() != "extruder":
+                md["machine_type"] = "extruder"
+                updated = True
+            if (md.get("type") or "").lower() != "extruder":
+                md["type"] = "extruder"
+                updated = True
+            if updated:
+                machine.metadata_json = md
+                session.add(machine)
+                await session.commit()
 
     async def _load_runtime_config(self) -> None:
         now = datetime.utcnow()
@@ -443,7 +464,60 @@ class MSSQLExtruderPoller:
                     "ai_raw": ai_result,
                 },
             )
+            # Store prediction (this also handles broadcasting to realtime channels)
             await prediction_service.create_prediction(session, pred)
+
+            # ---------------- Machine state detection & extruder AI incidents ----------------
+            try:
+                # Build a rich sensor reading for the machine state detector from the
+                # current MSSQL snapshot. We treat the MSSQL feed as the canonical source
+                # for this machine, so we feed all available KPIs here.
+                state_service = MachineStateService(session)
+                sensor_reading = SensorReading(
+                    timestamp=ts,
+                    screw_rpm=readings.get("rpm"),
+                    pressure_bar=readings.get("pressure"),
+                    temp_zone_1=readings.get("temp_zone1"),
+                    temp_zone_2=readings.get("temp_zone2"),
+                    temp_zone_3=readings.get("temp_zone3"),
+                    temp_zone_4=readings.get("temp_zone4"),
+                )
+
+                # Process the reading and persist machine state / transitions / alerts.
+                await state_service.process_sensor_reading(str(self._machine_id), sensor_reading)
+
+                # Load machine entity for extruder AI decision service.
+                machine = await session.get(Machine, self._machine_id)
+                if machine:
+                    # Feed canonical variables into the extruder AI decision window.
+                    # We always provide pressure and average temperature when available.
+                    if readings.get("temperature") is not None:
+                        extruder_ai_service.observe(
+                            machine_id=str(machine.id),
+                            var_name="temperature",
+                            value=float(readings["temperature"]),
+                            timestamp=ts,
+                        )
+                    if readings.get("pressure") is not None:
+                        extruder_ai_service.observe(
+                            machine_id=str(machine.id),
+                            var_name="pressure",
+                            value=float(readings["pressure"]),
+                            timestamp=ts,
+                        )
+
+                    # Decide on profile transitions and calmly create/resolve incidents.
+                    decision = extruder_ai_service.decide(machine_id=str(machine.id), now=ts)
+                    if decision:
+                        await extruder_ai_service.apply_and_maybe_raise_incident(
+                            session,
+                            machine=machine,
+                            observed_at=ts,
+                            decision=decision,
+                        )
+            except Exception as e:
+                # Non-blocking: prediction persistence must not fail due to state/incident logic.
+                logger.error(f"MSSQL extruder machine state / incident processing failed: {e}", exc_info=True)
 
     async def _score_with_ai_service(self, *, ts: datetime, readings: Dict[str, float]) -> Dict[str, Any]:
         if self._machine_id is None or self._sensor_id is None:
