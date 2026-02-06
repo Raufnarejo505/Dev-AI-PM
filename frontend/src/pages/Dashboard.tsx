@@ -63,7 +63,7 @@ export default function Dashboard() {
           safeApi.get('/dashboard/extruder/status'),
           safeApi.get('/dashboard/extruder/latest?limit=50'),
           safeApi.get('/dashboard/extruder/derived?window_minutes=30'),
-          safeApi.get('/api/machine-state/states/current'),
+          safeApi.get('/machine-state/states/current'),
         ]);
         
         if (!mountedRef.current) return;
